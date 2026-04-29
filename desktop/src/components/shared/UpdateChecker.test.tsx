@@ -4,6 +4,7 @@ import '@testing-library/jest-dom'
 
 import { UpdateChecker } from './UpdateChecker'
 import { useUpdateStore } from '../../stores/updateStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 
 describe('UpdateChecker', () => {
   beforeEach(() => {
@@ -15,7 +16,7 @@ describe('UpdateChecker', () => {
     useUpdateStore.setState({
       status: 'available',
       availableVersion: '0.1.5',
-      releaseNotes: '# Claude Code Haha v0.1.5\n\n[Release notes](https://example.com/releases/v0.1.5)',
+      releaseNotes: '# Claude Code A+BAY v0.1.5\n\n[Release notes](https://example.com/releases/v0.1.5)',
       progressPercent: 0,
       downloadedBytes: 0,
       totalBytes: null,
@@ -27,13 +28,14 @@ describe('UpdateChecker', () => {
       installUpdate: vi.fn().mockResolvedValue(undefined),
       dismissPrompt: vi.fn(),
     })
+    useSettingsStore.setState({ locale: 'en' })
   })
 
   it('renders markdown release notes in the update prompt', () => {
     render(<UpdateChecker />)
 
     expect(screen.getByText('v0.1.5 available')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Claude Code Haha v0.1.5' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Claude Code A+BAY v0.1.5' })).toBeInTheDocument()
 
     const link = screen.getByRole('link', { name: 'Release notes' })
     expect(link).toHaveAttribute('href', 'https://example.com/releases/v0.1.5')
@@ -44,7 +46,7 @@ describe('UpdateChecker', () => {
     useUpdateStore.setState({
       status: 'downloading',
       availableVersion: '0.1.5',
-      releaseNotes: '# Claude Code Haha v0.1.5',
+      releaseNotes: '# Claude Code A+BAY v0.1.5',
       progressPercent: 0,
       downloadedBytes: 1536,
       totalBytes: null,

@@ -16,7 +16,7 @@ describe('ConversationService', () => {
   let originalProviderManagedByHost: string | undefined
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-haha-conversation-service-'))
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-abay-conversation-service-'))
     originalConfigDir = process.env.CLAUDE_CONFIG_DIR
     originalAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
     originalBaseUrl = process.env.ANTHROPIC_BASE_URL
@@ -63,7 +63,7 @@ describe('ConversationService', () => {
 
   test('keeps inherited provider env when no desktop provider config exists', async () => {
     const service = new ConversationService() as any
-    const env = (await service.buildChildEnv('D:\\workspace\\code\\myself_code\\cc-haha')) as Record<string, string>
+    const env = (await service.buildChildEnv('D:\\workspace\\code\\myself_code\\claude-abay')) as Record<string, string>
 
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('test-token')
     expect(env.ANTHROPIC_BASE_URL).toBe('https://example.invalid/anthropic')
@@ -71,35 +71,35 @@ describe('ConversationService', () => {
   })
 
   test('strips inherited provider env when desktop provider config exists', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+    const abayDir = path.join(tmpDir, 'claude-abay')
+    await fs.mkdir(abayDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'providers.json'),
+      path.join(abayDir, 'providers.json'),
       JSON.stringify({ activeId: null, providers: [] }),
       'utf-8',
     )
 
     const service = new ConversationService() as any
-    const env = (await service.buildChildEnv('D:\\workspace\\code\\myself_code\\cc-haha')) as Record<string, string>
+    const env = (await service.buildChildEnv('D:\\workspace\\code\\myself_code\\claude-abay')) as Record<string, string>
 
     expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
     expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
     expect(env.ANTHROPIC_MODEL).toBeUndefined()
   })
 
-  test('buildChildEnv injects CLAUDE_CODE_OAUTH_TOKEN when official mode + haha oauth token exists', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+  test('buildChildEnv injects CLAUDE_CODE_OAUTH_TOKEN when official mode + A+BAY oauth token exists', async () => {
+    const abayDir = path.join(tmpDir, 'claude-abay')
+    await fs.mkdir(abayDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'settings.json'),
+      path.join(abayDir, 'settings.json'),
       JSON.stringify({ env: {} }),
       'utf-8',
     )
 
-    const { hahaOAuthService } = await import('../services/hahaOAuthService.js')
-    await hahaOAuthService.saveTokens({
-      accessToken: 'haha-fresh-token',
-      refreshToken: 'haha-refresh-xxx',
+    const { abayOAuthService } = await import('../services/abayOAuthService.js')
+    await abayOAuthService.saveTokens({
+      accessToken: 'abay-fresh-token',
+      refreshToken: 'abay-refresh-xxx',
       expiresAt: Date.now() + 30 * 60_000,
       scopes: ['user:inference'],
       subscriptionType: 'max',
@@ -109,21 +109,21 @@ describe('ConversationService', () => {
     const env = (await service.buildChildEnv('/tmp')) as Record<string, string>
 
     expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('claude-desktop')
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('haha-fresh-token')
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('abay-fresh-token')
   })
 
   test('buildChildEnv does NOT inject CLAUDE_CODE_OAUTH_TOKEN when not official mode', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+    const abayDir = path.join(tmpDir, 'claude-abay')
+    await fs.mkdir(abayDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'settings.json'),
+      path.join(abayDir, 'settings.json'),
       JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'custom-provider-token' } }),
       'utf-8',
     )
 
-    const { hahaOAuthService } = await import('../services/hahaOAuthService.js')
-    await hahaOAuthService.saveTokens({
-      accessToken: 'haha-token-should-not-be-used',
+    const { abayOAuthService } = await import('../services/abayOAuthService.js')
+    await abayOAuthService.saveTokens({
+      accessToken: 'abay-token-should-not-be-used',
       refreshToken: null,
       expiresAt: null,
       scopes: [],
@@ -219,16 +219,16 @@ describe('ConversationService', () => {
   })
 
   test('buildChildEnv can force official auth even when a custom default provider exists', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+    const abayDir = path.join(tmpDir, 'claude-abay')
+    await fs.mkdir(abayDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'settings.json'),
+      path.join(abayDir, 'settings.json'),
       JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'custom-provider-token' } }),
       'utf-8',
     )
 
-    const { hahaOAuthService } = await import('../services/hahaOAuthService.js')
-    await hahaOAuthService.saveTokens({
+    const { abayOAuthService } = await import('../services/abayOAuthService.js')
+    await abayOAuthService.saveTokens({
       accessToken: 'forced-official-token',
       refreshToken: 'forced-official-refresh',
       expiresAt: Date.now() + 30 * 60_000,
@@ -247,10 +247,10 @@ describe('ConversationService', () => {
   })
 
   test('buildChildEnv does not leak inherited CLAUDE_CODE_OAUTH_TOKEN when official token is unavailable', async () => {
-    const ccHahaDir = path.join(tmpDir, 'cc-haha')
-    await fs.mkdir(ccHahaDir, { recursive: true })
+    const abayDir = path.join(tmpDir, 'claude-abay')
+    await fs.mkdir(abayDir, { recursive: true })
     await fs.writeFile(
-      path.join(ccHahaDir, 'settings.json'),
+      path.join(abayDir, 'settings.json'),
       JSON.stringify({ env: {} }),
       'utf-8',
     )
@@ -269,10 +269,10 @@ describe('ConversationService', () => {
       'ws://127.0.0.1:3456/sdk/test-session?token=test-token',
     )) as Record<string, string>
 
-    expect(env.CC_HAHA_COMPUTER_USE_HOST_BUNDLE_ID).toBe(
-      'com.claude-code-haha.desktop',
+    expect(env.CLAUDE_ABAY_COMPUTER_USE_HOST_BUNDLE_ID).toBe(
+      'com.claude-code-abay.desktop',
     )
-    expect(env.CC_HAHA_DESKTOP_SERVER_URL).toBe('http://127.0.0.1:3456')
+    expect(env.CLAUDE_ABAY_DESKTOP_SERVER_URL).toBe('http://127.0.0.1:3456')
     expect(env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING).toBe('1')
   })
 
@@ -286,7 +286,7 @@ describe('ConversationService', () => {
       expect(args[2]).toContain('preload.ts')
       expect(args[3]).toContain(path.join('src', 'entrypoints', 'cli.tsx'))
     } else {
-      expect(args[0]).toContain(path.join('bin', 'claude-haha'))
+      expect(args[0]).toContain(path.join('bin', 'claude-abay'))
     }
   })
 
@@ -311,8 +311,8 @@ describe('ConversationService', () => {
       'ws://127.0.0.1:3456/sdk/test-session?token=test-token',
     )) as Record<string, string>
 
-    expect(env.CC_HAHA_DESKTOP_AWAIT_MCP).toBe('1')
-    expect(env.CC_HAHA_DESKTOP_AWAIT_MCP_TIMEOUT_MS).toBe('5000')
+    expect(env.CLAUDE_ABAY_DESKTOP_AWAIT_MCP).toBe('1')
+    expect(env.CLAUDE_ABAY_DESKTOP_AWAIT_MCP_TIMEOUT_MS).toBe('5000')
   })
 
   test('buildSessionCliArgs forwards the selected runtime model and effort to the CLI process', () => {

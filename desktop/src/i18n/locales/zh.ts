@@ -125,7 +125,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.providers.sameAsMain': '与主模型相同',
   'settings.providers.testConnection': '测试连接',
   'settings.providers.settingsJson': '设置 JSON',
-  'settings.providers.settingsJsonDesc': '~/.claude/cc-haha/settings.json — 直接编辑，保存时写入。',
+  'settings.providers.settingsJsonDesc': '~/.claude/claude-abay/settings.json — 直接编辑，保存时写入。',
   'settings.providers.jsonError': 'JSON 语法错误: {error}',
   'settings.providers.apiFormat': 'API 格式',
   'settings.providers.apiFormatAnthropic': 'Anthropic Messages (原生)',

@@ -1,19 +1,19 @@
-# Claude Code Haha
+# Claude Code A+BAY
 
 <p align="center">
-  <img src="docs/images/logo-horizontal.jpg" alt="Claude Code Haha" width="480">
+  <img src="docs/images/logo-horizontal.png" alt="Claude Code A+BAY" width="480">
 </p>
 
 <div align="center">
 
-[![GitHub Stars](https://img.shields.io/github/stars/NanmiCoder/cc-haha?style=social)](https://github.com/NanmiCoder/cc-haha/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/NanmiCoder/cc-haha?style=social)](https://github.com/NanmiCoder/cc-haha/network/members)
-[![GitHub Issues](https://img.shields.io/github/issues/NanmiCoder/cc-haha)](https://github.com/NanmiCoder/cc-haha/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/NanmiCoder/cc-haha)](https://github.com/NanmiCoder/cc-haha/pulls)
-[![License](https://img.shields.io/github/license/NanmiCoder/cc-haha)](https://github.com/NanmiCoder/cc-haha/blob/main/LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/aaronychu/claude-abay?style=social)](https://github.com/aaronychu/claude-abay/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/aaronychu/claude-abay?style=social)](https://github.com/aaronychu/claude-abay/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/aaronychu/claude-abay)](https://github.com/aaronychu/claude-abay/issues)
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/aaronychu/claude-abay)](https://github.com/aaronychu/claude-abay/pulls)
+[![License](https://img.shields.io/github/license/aaronychu/claude-abay)](https://github.com/aaronychu/claude-abay/blob/main/LICENSE)
 [![中文](https://img.shields.io/badge/🇨🇳_中文-Available-green)](README.md)
 [![English](https://img.shields.io/badge/🇺🇸_English-当前-blue)](README.en.md)
-[![Docs](https://img.shields.io/badge/📖_Documentation-Visit-D97757)](https://claudecode-haha.relakkesyang.org)
+[![Docs](https://img.shields.io/badge/📖_Documentation-Visit-D97757)](https://claudecode-abay.relakkesyang.org)
 
 </div>
 
@@ -37,7 +37,7 @@ A **locally runnable version** repaired from the leaked Claude Code source, with
 - **Channel System** (remote Agent control via Telegram/Feishu/Discord IM platforms) — [Architecture](docs/en/channel/01-channel-system.md)
 - **Computer Use desktop control** — [Guide](docs/en/features/computer-use.md) | [Architecture](docs/en/features/computer-use-architecture.md)
 - **Desktop App** (Tauri 2 + React GUI client, multi-tab multi-session) — [Docs](docs/desktop/)
-- Fallback Recovery CLI mode (`CLAUDE_CODE_FORCE_RECOVERY_CLI=1 ./bin/claude-haha`)
+- Fallback Recovery CLI mode (`CLAUDE_CODE_FORCE_RECOVERY_CLI=1 ./bin/claude-abay`)
 
 ---
 
@@ -63,7 +63,7 @@ A **locally runnable version** repaired from the leaked Claude Code source, with
 ## Desktop Preview
 
 <p align="center">
-  <a href="https://github.com/NanmiCoder/cc-haha/releases"><img src="https://img.shields.io/badge/⬇_Download_Desktop-macOS_%7C_Windows-D97757?style=for-the-badge" alt="Download Desktop"></a>
+  <a href="https://github.com/aaronychu/claude-abay/releases"><img src="https://img.shields.io/badge/⬇_Download_Desktop-macOS_%7C_Windows-D97757?style=for-the-badge" alt="Download Desktop"></a>
   &nbsp;
   <a href="docs/desktop/04-installation.md"><img src="https://img.shields.io/badge/📖_Install_Guide-Guide-gray?style=for-the-badge" alt="Install Guide"></a>
 </p>
@@ -113,9 +113,9 @@ cp .env.example .env
 #### macOS / Linux
 
 ```bash
-./bin/claude-haha                          # Interactive TUI mode
-./bin/claude-haha -p "your prompt here"    # Headless mode
-./bin/claude-haha --help                   # Show all options
+./bin/claude-abay                          # Interactive TUI mode
+./bin/claude-abay -p "your prompt here"    # Headless mode
+./bin/claude-abay --help                   # Show all options
 ```
 
 #### Windows
@@ -127,7 +127,7 @@ cp .env.example .env
 bun --env-file=.env ./src/entrypoints/cli.tsx
 
 # Or run inside Git Bash
-./bin/claude-haha
+./bin/claude-abay
 ```
 
 ### 4. Global Usage (Optional)
@@ -135,7 +135,7 @@ bun --env-file=.env ./src/entrypoints/cli.tsx
 Add `bin/` to your PATH to run from any directory. See [Global Usage Guide](docs/en/guide/global-usage.md):
 
 ```bash
-export PATH="$HOME/path/to/claude-code-haha/bin:$PATH"
+export PATH="$HOME/path/to/claude-code-abay/bin:$PATH"
 ```
 
 ### 5. Desktop Development
@@ -145,7 +145,7 @@ If you are developing or testing the `desktop/` frontend, start both the API ser
 #### 5.1 Start the API server
 
 ```bash
-cd /Users/nanmi/workspace/myself_code/claude-code-haha
+cd /Users/nanmi/workspace/myself_code/claude-code-abay
 SERVER_PORT=3456 bun run src/server/index.ts
 ```
 
@@ -158,7 +158,7 @@ curl http://127.0.0.1:3456/health
 #### 5.2 Start the desktop frontend
 
 ```bash
-cd /Users/nanmi/workspace/myself_code/claude-code-haha/desktop
+cd /Users/nanmi/workspace/myself_code/claude-code-abay/desktop
 bun run dev --host 127.0.0.1 --port 2024
 ```
 
@@ -201,7 +201,7 @@ http://127.0.0.1:2024
 | [Channel System](docs/en/channel/01-channel-system.md) | Remote Agent control via Telegram/Feishu/Discord IM platforms |
 | [Computer Use](docs/en/features/computer-use.md) | Desktop control (screenshots, mouse, keyboard) — [Architecture](docs/en/features/computer-use-architecture.md) |
 | [Desktop App](docs/desktop/) | Tauri 2 + React GUI client — [Quick Start](docs/desktop/01-quick-start.md) \| [Architecture](docs/desktop/02-architecture.md) \| [Installation](docs/desktop/04-installation.md) |
-| [Global Usage](docs/en/guide/global-usage.md) | Run claude-haha from any directory |
+| [Global Usage](docs/en/guide/global-usage.md) | Run claude-abay from any directory |
 | [FAQ](docs/en/guide/faq.md) | Common error troubleshooting |
 | [Source Fixes](docs/en/reference/fixes.md) | Fixes compared with the original leaked source |
 | [Project Structure](docs/en/reference/project-structure.md) | Code directory structure |
@@ -285,13 +285,13 @@ Thanks to the following open-source projects and community practices for referen
 
 ## ⭐ Star History
 
-If this project helps you, please support it with a ⭐ Star so more people can discover Claude Code Haha.
+If this project helps you, please support it with a ⭐ Star so more people can discover Claude Code A+BAY.
 
-<a href="https://www.star-history.com/#NanmiCoder/cc-haha&Date">
+<a href="https://www.star-history.com/#aaronychu/claude-abay&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=NanmiCoder/cc-haha&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=NanmiCoder/cc-haha&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=NanmiCoder/cc-haha&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=aaronychu/claude-abay&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=aaronychu/claude-abay&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=aaronychu/claude-abay&type=Date" />
   </picture>
 </a>
 

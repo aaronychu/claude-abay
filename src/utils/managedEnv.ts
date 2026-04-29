@@ -93,15 +93,15 @@ function filterSettingsEnv(
 }
 
 /**
- * Read env vars from ~/.claude/cc-haha/settings.json (Haha-specific provider
+ * Read env vars from ~/.claude/claude-abay/settings.json (A+BAY-specific provider
  * config). This file is written by ProviderService.syncToSettings() and
  * contains ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, model defaults, etc.
  * Returns an empty object if the file doesn't exist or is invalid.
  */
-function getCcHahaSettingsEnv(): Record<string, string> {
+function getAbaySettingsEnv(): Record<string, string> {
   try {
-    const ccHahaSettings = join(getClaudeConfigHomeDir(), 'cc-haha', 'settings.json')
-    const raw = readFileSync(ccHahaSettings, 'utf-8')
+    const abaySettings = join(getClaudeConfigHomeDir(), 'claude-abay', 'settings.json')
+    const raw = readFileSync(abaySettings, 'utf-8')
     const parsed = JSON.parse(raw) as { env?: Record<string, string> }
     return parsed.env ?? {}
   } catch {
@@ -167,11 +167,11 @@ export function applySafeConfigEnvironmentVariables(): void {
     )
   }
 
-  // cc-haha provider isolation: apply env from ~/.claude/cc-haha/settings.json
-  // AFTER userSettings so Haha-specific provider config takes priority over
-  // the original Claude Code's settings. This prevents Haha from polluting
+  // claude-abay provider isolation: apply env from ~/.claude/claude-abay/settings.json
+  // AFTER userSettings so A+BAY-specific provider config takes priority over
+  // the original Claude Code's settings. This prevents A+BAY from polluting
   // ~/.claude/settings.json while still allowing it to override provider vars.
-  Object.assign(process.env, filterSettingsEnv(getCcHahaSettingsEnv()))
+  Object.assign(process.env, filterSettingsEnv(getAbaySettingsEnv()))
 
   // Compute remote-managed-settings eligibility now, with userSettings and
   // flagSettings env applied. Eligibility reads CLAUDE_CODE_USE_BEDROCK,
@@ -214,9 +214,9 @@ export function applyConfigEnvironmentVariables(): void {
 
   Object.assign(process.env, filterSettingsEnv(getSettings_DEPRECATED()?.env))
 
-  // cc-haha provider isolation: same as in applySafeConfigEnvironmentVariables,
-  // apply Haha-specific env last so it overrides the original settings.
-  Object.assign(process.env, filterSettingsEnv(getCcHahaSettingsEnv()))
+  // claude-abay provider isolation: same as in applySafeConfigEnvironmentVariables,
+  // apply A+BAY-specific env last so it overrides the original settings.
+  Object.assign(process.env, filterSettingsEnv(getAbaySettingsEnv()))
 
   // Clear caches so agents are rebuilt with the new env vars
   clearCACertsCache()

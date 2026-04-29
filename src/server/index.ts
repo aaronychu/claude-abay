@@ -13,7 +13,7 @@ import { teamWatcher } from './services/teamWatcher.js'
 import { cronScheduler } from './services/cronScheduler.js'
 import { handleProxyRequest } from './proxy/handler.js'
 import { ProviderService } from './services/providerService.js'
-import { handleHahaOAuthCallback } from './api/haha-oauth.js'
+import { handleAbayOAuthCallback } from './api/abay-oauth.js'
 import { ensureDesktopCliLauncherInstalled } from './services/desktopCliLauncherService.js'
 
 function readArgValue(flag: string): string | undefined {
@@ -132,7 +132,7 @@ export function startServer(port = PORT, host = HOST) {
       }
 
       if (url.pathname === '/callback') {
-        return handleHahaOAuthCallback(url)
+        return handleAbayOAuthCallback(url)
       }
 
       // REST API

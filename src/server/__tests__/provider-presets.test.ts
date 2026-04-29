@@ -117,7 +117,7 @@ describe('provider presets API', () => {
     expect(ollama?.defaultEnv).toEqual({ ANTHROPIC_AUTH_TOKEN: 'ollama' })
     expect(deepseek?.apiKeyUrl).toBe('https://platform.deepseek.com/api_keys')
     expect(zhipu?.apiKeyUrl).toBe('https://www.bigmodel.cn/invite?icode=d41B2qi8Z5xNwTGLNPPF3OZLO2QH3C0EBTSr%2BArzMw4%3D')
-    expect(zhipu?.promoText).toContain('cc-haha')
+    expect(zhipu?.promoText).toContain('claude-abay')
     expect(kimi?.apiKeyUrl).toBe('https://platform.kimi.com/console/api-keys')
     expect(minimax?.apiKeyUrl).toBe('https://platform.minimaxi.com/subscribe/token-plan?code=1TG2Cseab2&source=link')
     expect(jiekouai?.apiKeyUrl).toBe('https://jiekou.ai/referral?invited_code=OBNU3K')
@@ -134,16 +134,16 @@ describe('provider presets API', () => {
     expect(custom?.promoText).toBeUndefined()
   })
 
-  test('GET and PUT /api/providers/settings read and write cc-haha settings.json', async () => {
+  test('GET and PUT /api/providers/settings read and write claude-abay settings.json', async () => {
     const initial = {
       env: {
         ANTHROPIC_MODEL: 'glm-5.1',
       },
       model: 'glm-5.1',
     }
-    await fs.mkdir(path.join(tmpDir, 'cc-haha'), { recursive: true })
+    await fs.mkdir(path.join(tmpDir, 'claude-abay'), { recursive: true })
     await fs.writeFile(
-      path.join(tmpDir, 'cc-haha', 'settings.json'),
+      path.join(tmpDir, 'claude-abay', 'settings.json'),
       JSON.stringify(initial, null, 2),
       'utf-8',
     )
@@ -163,7 +163,7 @@ describe('provider presets API', () => {
     const putRes = await handleProvidersApi(putReq.req, putReq.url, putReq.segments)
     expect(putRes.status).toBe(200)
 
-    const updatedRaw = await fs.readFile(path.join(tmpDir, 'cc-haha', 'settings.json'), 'utf-8')
+    const updatedRaw = await fs.readFile(path.join(tmpDir, 'claude-abay', 'settings.json'), 'utf-8')
     expect(JSON.parse(updatedRaw)).toEqual(updateBody)
   })
 })

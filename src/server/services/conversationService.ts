@@ -599,7 +599,7 @@ export class ConversationService {
   ): Promise<Record<string, string>> {
     // Provider isolation: when Desktop has its own provider config/index,
     // strip inherited provider env vars so the child CLI reads fresh values
-    // from ~/.claude/cc-haha/settings.json instead of stale process.env.
+    // from ~/.claude/claude-abay/settings.json instead of stale process.env.
     //
     // If the user never configured a Desktop provider and only launched the
     // app/server with ANTHROPIC_* env vars, keep those env vars so Windows
@@ -650,25 +650,25 @@ export class ConversationService {
       CALLER_DIR: workDir,
       PWD: workDir,
       ...(sdkUrl
-        ? { CC_HAHA_COMPUTER_USE_HOST_BUNDLE_ID: 'com.claude-code-haha.desktop' }
+        ? { CLAUDE_ABAY_COMPUTER_USE_HOST_BUNDLE_ID: 'com.claude-code-abay.desktop' }
         : {}),
       ...(desktopServerUrl
-        ? { CC_HAHA_DESKTOP_SERVER_URL: desktopServerUrl }
+        ? { CLAUDE_ABAY_DESKTOP_SERVER_URL: desktopServerUrl }
         : {}),
       ...(sdkUrl
         ? {
-            CC_HAHA_DESKTOP_AWAIT_MCP: '1',
-            CC_HAHA_DESKTOP_AWAIT_MCP_TIMEOUT_MS: '5000',
+            CLAUDE_ABAY_DESKTOP_AWAIT_MCP: '1',
+            CLAUDE_ABAY_DESKTOP_AWAIT_MCP_TIMEOUT_MS: '5000',
           }
         : {}),
       // Tell the CLI entrypoint to skip project .env loading. Provider env
       // should come from Desktop-managed config or inherited launch env, not
       // be reintroduced from the repo's .env file.
-      CC_HAHA_SKIP_DOTENV: '1',
+      CLAUDE_ABAY_SKIP_DOTENV: '1',
       ...(explicitProviderEnv
         ? { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1' }
         : {}),
-      // "官方" 模式 (cc-haha/settings.json 没 provider env) 下,把 CLI 标记为
+      // "官方" 模式 (claude-abay/settings.json 没 provider env) 下,把 CLI 标记为
       // managed-OAuth,让它忽略外部 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
       // 残留、只走用户 /login 的 OAuth token。自定义 provider 模式绝不能设,
       // 否则 CLI 会忽略 provider 的 AUTH_TOKEN、错误地走 OAuth 打到第三方
@@ -683,7 +683,7 @@ export class ConversationService {
   /**
    * 官方模式下构造 CLI 子进程的 auth env:
    * - CLAUDE_CODE_ENTRYPOINT=claude-desktop 让 CLI 忽略外部残留 ANTHROPIC_* env
-   * - 如果 haha 自管的 oauth.json 里有可用 token,注入 CLAUDE_CODE_OAUTH_TOKEN
+   * - 如果 A+BAY 自管的 oauth.json 里有可用 token,注入 CLAUDE_CODE_OAUTH_TOKEN
    *   让 CLI 直接拿 env 里的 token,不碰 Keychain,绕开 macOS ACL 静默拒绝
    *   (这是 DMG 安装 .app 后 403 "Request not allowed" 的唯一根治方案)
    */
@@ -694,8 +694,8 @@ export class ConversationService {
     try {
       // deferred import: avoids instantiating the OAuth singleton on every
       // ConversationService construction — only loaded when official mode hits.
-      const { hahaOAuthService } = await import('./hahaOAuthService.js')
-      const token = await hahaOAuthService.ensureFreshAccessToken()
+      const { abayOAuthService } = await import('./abayOAuthService.js')
+      const token = await abayOAuthService.ensureFreshAccessToken()
       if (token) {
         env.CLAUDE_CODE_OAUTH_TOKEN = token
       }
@@ -715,9 +715,9 @@ export class ConversationService {
 
     const configDir =
       process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-    const ccHahaDir = path.join(configDir, 'cc-haha')
-    const providersIndexPath = path.join(ccHahaDir, 'providers.json')
-    const settingsPath = path.join(ccHahaDir, 'settings.json')
+    const abayDir = path.join(configDir, 'claude-abay')
+    const providersIndexPath = path.join(abayDir, 'providers.json')
+    const settingsPath = path.join(abayDir, 'settings.json')
 
     if (fs.existsSync(providersIndexPath)) {
       return true
@@ -750,7 +750,7 @@ export class ConversationService {
    * 这种情况下 CLI 必须按 token 路径走第三方 endpoint,不能被 managed 规则
    * 强制切 OAuth。
    *
-   * 默认 (读不到 settings.json) 按"官方"处理 — 即使用户从未用过 cc-haha
+   * 默认 (读不到 settings.json) 按"官方"处理 — 即使用户从未用过 claude-abay
    * provider 管理,也希望官方 OAuth 能正常工作。
    */
   private shouldMarkManagedOAuth(providerId?: string | null): boolean {
@@ -763,7 +763,7 @@ export class ConversationService {
 
     const configDir =
       process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-    const settingsPath = path.join(configDir, 'cc-haha', 'settings.json')
+    const settingsPath = path.join(configDir, 'claude-abay', 'settings.json')
     try {
       const raw = fs.readFileSync(settingsPath, 'utf-8')
       const parsed = JSON.parse(raw) as { env?: Record<string, string> }
@@ -798,7 +798,7 @@ export class ConversationService {
           ...baseArgs,
         ]
       }
-      return [path.resolve(import.meta.dir, '../../../bin/claude-haha'), ...baseArgs]
+      return [path.resolve(import.meta.dir, '../../../bin/claude-abay'), ...baseArgs]
     }
 
     return buildClaudeCliArgs(launcher, baseArgs, process.env.CLAUDE_APP_ROOT)
@@ -846,7 +846,7 @@ export class ConversationService {
       )
     ) {
       return new ConversationStartupError(
-        'Desktop chat could not start because Claude CLI is not authenticated. Run `./bin/claude-haha /login` or provide valid API credentials, then retry.',
+        'Desktop chat could not start because Claude CLI is not authenticated. Run `./bin/claude-abay /login` or provide valid API credentials, then retry.',
         'CLI_AUTH_REQUIRED',
       )
     }

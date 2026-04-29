@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "bin": {
-    "claude-haha": "./bin/claude-haha"
+    "claude-abay": "./bin/claude-abay"
   },
   "scripts": {
-    "claude-haha": "bun run ./bin/claude-haha",
-    "start": "bun run ./bin/claude-haha",
+    "claude-abay": "bun run ./bin/claude-abay",
+    "start": "bun run ./bin/claude-abay",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
@@ -17,6 +17,7 @@
     "@anthropic-ai/sandbox-runtime": "^0.0.44",
     "@anthropic-ai/sdk": "^0.80.0",
     "@aws-sdk/client-bedrock-runtime": "^3.1020.0",
+    "@larksuiteoapi/node-sdk": "^1.60.0",
     "@commander-js/extra-typings": "^14.0.0",
     "@growthbook/growthbook": "^1.6.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -44,6 +45,7 @@
     "fuse.js": "^7.1.0",
     "get-east-asian-width": "^1.5.0",
     "google-auth-library": "^10.6.2",
+    "grammy": "^1.42.0",
     "highlight.js": "^11.11.1",
     "https-proxy-agent": "^8.0.0",
     "ignore": "^7.0.5",
