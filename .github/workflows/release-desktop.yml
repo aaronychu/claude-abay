@@ -128,7 +128,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       # ── Rust ─────────────────────────────────────────────────
       - name: Setup Rust
@@ -177,5 +177,5 @@ jobs:
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: false
           updaterJsonPreferNsis: true
-          releaseAssetNamePattern: ${{ matrix.asset_name_pattern }}
+          assetNamePattern: ${{ matrix.asset_name_pattern }}
           args: ${{ matrix.tauri_args }} --config src-tauri/tauri.release-ci.json
