@@ -1,22 +1,5 @@
 # Claude Code A+BAY
 
-<p align="center">
-  <img src="docs/images/app-icon.png" alt="Claude Code A+BAY" width="240">
-</p>
-
-<div align="center">
-
-[![GitHub Stars](https://img.shields.io/github/stars/aaronychu/claude-abay?style=social)](https://github.com/aaronychu/claude-abay/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/aaronychu/claude-abay?style=social)](https://github.com/aaronychu/claude-abay/network/members)
-[![GitHub Issues](https://img.shields.io/github/issues/aaronychu/claude-abay)](https://github.com/aaronychu/claude-abay/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/aaronychu/claude-abay)](https://github.com/aaronychu/claude-abay/pulls)
-[![License](https://img.shields.io/github/license/aaronychu/claude-abay)](https://github.com/aaronychu/claude-abay/blob/main/LICENSE)
-[![中文](https://img.shields.io/badge/🇨🇳_中文-当前-blue)](README.md)
-[![English](https://img.shields.io/badge/🇺🇸_English-Available-green)](README.en.md)
-[![Docs](https://img.shields.io/badge/📖_文档站点-Visit-D97757)](https://claudecode-abay.relakkesyang.org)
-
-</div>
-
 基于 Claude Code 泄露源码修复的**本地可运行版本**，支持接入任意 Anthropic 兼容 API（MiniMax、OpenRouter 等）。在完整 TUI 之外，还补全了 Computer Use（macOS / Windows）、打造了图形化**桌面端**，并支持通过 Telegram / 飞书**完整远程驱动**。
 
 <p align="center">
