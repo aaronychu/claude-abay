@@ -517,7 +517,7 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   const slashCommandsLabel = isHeroComposer ? t('empty.slashCommands') : t('chat.slashCommands')
 
   return (
-    <div className={isHeroComposer ? 'bg-[var(--color-surface)] px-8 pb-4' : 'bg-[var(--color-surface)] px-4 py-4'}>
+    <div className={isHeroComposer ? 'chat-composer-surface bg-[var(--color-surface)] px-8 pb-4' : 'chat-composer-surface bg-[var(--color-surface)] px-4 py-4'}>
       <div className={isHeroComposer ? 'mx-auto flex w-full max-w-3xl flex-col gap-2' : 'mx-auto max-w-[860px]'}>
         <div
           className={isHeroComposer
@@ -642,8 +642,8 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
           )}
 
           <div className={isHeroComposer
-            ? 'flex items-center justify-between border-t border-[var(--color-border-separator)] pt-3'
-            : 'absolute bottom-0 left-0 right-0 flex items-center justify-between border-t border-[var(--color-border-separator)] px-3 py-3'}>
+            ? 'composer-toolbar flex items-center justify-between border-t border-[var(--color-border-separator)] pt-3'
+            : 'composer-toolbar absolute bottom-0 left-0 right-0 flex items-center justify-between border-t border-[var(--color-border-separator)] px-3 py-3'}>
             <div className="flex items-center gap-2">
               {!isMemberSession && (
                 <>

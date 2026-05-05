@@ -57,8 +57,9 @@ export function Dropdown<T extends string>({
         <div
           className={`
             absolute z-50 mt-1 overflow-hidden rounded-[var(--radius-lg)]
-            bg-[var(--color-surface-container-lowest)] border border-[var(--color-border)]
+            bg-[var(--color-surface-glass)] border border-[var(--color-surface-glass-border)]
             shadow-[var(--shadow-dropdown)]
+            backdrop-blur-xl
             animate-in fade-in slide-in-from-top-1
             ${align === 'right' ? 'right-0' : 'left-0'}
           `}

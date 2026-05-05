@@ -26,7 +26,7 @@ export function Modal({ open, onClose, title, children, width = 560, footer }: M
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-[var(--color-overlay-scrim)] transition-opacity duration-200"
+        className="absolute inset-0 bg-[var(--color-overlay-scrim)] backdrop-blur-[6px] transition-opacity duration-200"
         onClick={onClose}
       />
 
@@ -39,7 +39,7 @@ export function Modal({ open, onClose, title, children, width = 560, footer }: M
         aria-label={title}
       >
         {title && (
-          <div className="flex items-start justify-between gap-4 px-6 pt-6 pb-0">
+          <div className="flex items-start justify-between gap-4 border-b border-[var(--color-border-separator)] px-6 py-4">
             <h2 className="text-xl font-bold text-[var(--color-text-primary)]">{title}</h2>
             <button
               type="button"
@@ -57,7 +57,7 @@ export function Modal({ open, onClose, title, children, width = 560, footer }: M
         </div>
 
         {footer && (
-          <div className="px-6 pb-6 pt-0 flex justify-end gap-2">
+          <div className="border-t border-[var(--color-border-separator)] bg-[var(--color-surface-container-low)]/55 px-6 py-4 flex justify-end gap-2">
             {footer}
           </div>
         )}

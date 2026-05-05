@@ -101,7 +101,7 @@ TAURI_ARGS=(
   app
   --ci
   --config
-  '{"build":{"beforeBuildCommand":"true"}}'
+  '{"build":{"beforeBuildCommand":"true"},"app":{"windows":[{"title":"Claude Code A+BAY","width":1440,"height":960,"minWidth":960,"minHeight":640,"decorations":true,"titleBarStyle":"Overlay","hiddenTitle":true,"transparent":true,"windowEffects":{"effects":["sidebar"],"state":"active"},"acceptFirstMouse":true}]}}'
 )
 
 if [[ "${SIGN_BUILD:-0}" != "1" ]]; then

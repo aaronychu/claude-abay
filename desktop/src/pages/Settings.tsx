@@ -43,10 +43,10 @@ export function Settings() {
   }, [pendingSettingsTab])
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-[var(--color-surface)]">
+    <div className="settings-page flex-1 flex flex-col overflow-hidden bg-[var(--color-surface)]">
       <div className="flex-1 flex overflow-hidden">
         {/* Tab navigation */}
-        <div className="w-[180px] border-r border-[var(--color-border)] py-3 flex-shrink-0 flex flex-col">
+        <div className="settings-nav w-[180px] border-r border-[var(--color-border)] py-3 flex-shrink-0 flex flex-col">
           <div className="flex-1">
             <TabButton icon="dns" label={t('settings.tab.providers')} active={activeTab === 'providers'} onClick={() => setActiveTab('providers')} />
             <TabButton icon="shield" label={t('settings.tab.permissions')} active={activeTab === 'permissions'} onClick={() => setActiveTab('permissions')} />
@@ -65,7 +65,7 @@ export function Settings() {
         </div>
 
         {/* Tab content */}
-        <div className="flex-1 overflow-y-auto px-8 py-6">
+        <div className="settings-content flex-1 overflow-y-auto px-8 py-6">
           {activeTab === 'providers' && <ProviderSettings />}
           {activeTab === 'permissions' && <PermissionSettings />}
           {activeTab === 'general' && <GeneralSettings />}
@@ -87,7 +87,7 @@ function TabButton({ icon, label, active, onClick }: { icon: string; label: stri
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left transition-colors ${
+      className={`mx-3 mb-0.5 w-[calc(100%_-_1.5rem)] flex items-center gap-2.5 rounded-[var(--radius-md)] px-3 py-2.5 text-sm text-left transition-colors ${
         active
           ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)] font-medium'
           : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
@@ -908,9 +908,9 @@ function GeneralSettings() {
           <button
             key={value}
             onClick={() => void setTheme(value)}
-            className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-all ${
+            className={`settings-segment flex-1 py-2 text-xs font-semibold rounded-lg border transition-all ${
               theme === value
-                ? 'bg-[image:var(--gradient-btn-primary)] text-[var(--color-btn-primary-fg)] border-transparent shadow-[var(--shadow-button-primary)]'
+                ? 'settings-segment--active border-[var(--color-border-focus)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)] shadow-[var(--shadow-focus-ring)]'
                 : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
             }`}
           >
@@ -927,9 +927,9 @@ function GeneralSettings() {
           <button
             key={value}
             onClick={() => setLocale(value)}
-            className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-all ${
+            className={`settings-segment flex-1 py-2 text-xs font-semibold rounded-lg border transition-all ${
               locale === value
-                ? 'bg-[var(--color-brand)] text-white border-[var(--color-brand)]'
+                ? 'settings-segment--active border-[var(--color-border-focus)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)] shadow-[var(--shadow-focus-ring)]'
                 : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
             }`}
           >
@@ -946,9 +946,9 @@ function GeneralSettings() {
           <button
             key={level}
             onClick={() => setEffort(level)}
-            className={`flex-1 py-2 text-xs font-semibold rounded-lg border transition-all ${
+            className={`settings-segment flex-1 py-2 text-xs font-semibold rounded-lg border transition-all ${
               effortLevel === level
-                ? 'bg-[var(--color-brand)] text-white border-[var(--color-brand)]'
+                ? 'settings-segment--active border-[var(--color-border-focus)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)] shadow-[var(--shadow-focus-ring)]'
                 : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
             }`}
           >
@@ -1520,15 +1520,15 @@ function PluginSettings() {
 
 // ─── About Settings ──────────────────────────────────────
 
-const GITHUB_REPO = 'https://github.com/NanmiCoder/claude-abay'
+const GITHUB_REPO = 'https://github.com/aaronychu/claude-abay'
 const GITHUB_ISSUES = `${GITHUB_REPO}/issues`
 const GITHUB_RELEASES = `${GITHUB_REPO}/releases`
-const AUTHOR_GITHUB = 'https://github.com/NanmiCoder'
-const SOCIAL_LINKS = [
-  { name: 'Bilibili', icon: '/icons/bilibili.svg', url: 'https://space.bilibili.com/434377496', label: '程序员阿江-Relakkes' },
-  { name: 'Douyin', icon: '/icons/douyin.svg', url: 'https://www.douyin.com/user/MS4wLjABAAAATJPY7LAlaa5X-c8uNdWkvz0jUGgpw4eeXIwu_8BhvqE', label: '程序员阿江-Relakkes' },
-  { name: 'Xiaohongshu', icon: '/icons/xiaohongshu.svg', url: 'https://www.xiaohongshu.com/user/profile/5f58bd990000000001003753', label: '程序员阿江-Relakkes' },
-] as const
+// const AUTHOR_GITHUB = 'https://github.com/NanmiCoder'
+// const SOCIAL_LINKS = [
+//   { name: 'Bilibili', icon: '/icons/bilibili.svg', url: 'https://space.bilibili.com/434377496', label: '程序员阿江-Relakkes' },
+//   { name: 'Douyin', icon: '/icons/douyin.svg', url: 'https://www.douyin.com/user/MS4wLjABAAAATJPY7LAlaa5X-c8uNdWkvz0jUGgpw4eeXIwu_8BhvqE', label: '程序员阿江-Relakkes' },
+//   { name: 'Xiaohongshu', icon: '/icons/xiaohongshu.svg', url: 'https://www.xiaohongshu.com/user/profile/5f58bd990000000001003753', label: '程序员阿江-Relakkes' },
+// ] as const
 
 function AboutSettings() {
   const t = useTranslation()
@@ -1625,7 +1625,7 @@ function AboutSettings() {
         >
           <img src="/icons/github.svg" alt="GitHub" className="w-5 h-5 opacity-70" />
           <div className="flex-1 text-left">
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">NanmiCoder/claude-abay</div>
+            <div className="text-sm font-medium text-[var(--color-text-primary)]">aaronychu/claude-abay</div>
             <div className="text-xs text-[var(--color-text-tertiary)]">{t('settings.about.starHint')}</div>
           </div>
         </button>
@@ -1734,7 +1734,7 @@ function AboutSettings() {
       <div className="w-full border-t border-[var(--color-border)]/40 my-6" />
 
       {/* Author */}
-      <div className="w-full">
+      {/* <div className="w-full">
         <h3 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-3">{t('settings.about.author')}</h3>
         <button
           onClick={() => openUrl(AUTHOR_GITHUB)}
@@ -1744,10 +1744,10 @@ function AboutSettings() {
           <span className="text-sm text-[var(--color-text-primary)]">程序员阿江-Relakkes</span>
           <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">GitHub</span>
         </button>
-      </div>
+      </div> */}
 
       {/* Social Media */}
-      <div className="w-full mt-4">
+      {/* <div className="w-full mt-4">
         <h3 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-3">{t('settings.about.socialMedia')}</h3>
         <div className="flex flex-col gap-0.5">
           {SOCIAL_LINKS.map((link) => (
@@ -1762,7 +1762,7 @@ function AboutSettings() {
             </button>
           ))}
         </div>
-      </div>
+      </div> */}
 
       <div className="mt-6 w-full">
         <button

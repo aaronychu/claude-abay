@@ -233,7 +233,7 @@ export function TabBar() {
   return (
     <div
       data-testid="tab-bar"
-      className="flex items-stretch bg-[var(--color-surface-container)] min-h-[37px] select-none border-b border-[var(--color-border)]"
+      className="tab-bar-surface flex items-stretch bg-[var(--color-surface-container)] min-h-[37px] select-none border-b border-[var(--color-border)]"
     >
 
       {canScrollLeft && (
@@ -378,7 +378,7 @@ const TabItem = forwardRef<HTMLDivElement, {
         ${isDragging ? 'z-20 cursor-grabbing' : 'cursor-grab'}
         transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
         ${isActive
-          ? 'bg-[var(--color-surface)]'
+          ? 'bg-[var(--color-surface)] shadow-[inset_0_-1px_0_rgba(255,255,255,0.72)]'
           : 'bg-transparent hover:bg-[var(--color-surface-hover)]'
         }
         ${isDragging ? 'opacity-95 shadow-[0_10px_24px_rgba(0,0,0,0.18)] ring-1 ring-[var(--color-border)]' : ''}

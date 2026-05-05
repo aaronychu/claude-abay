@@ -81,7 +81,7 @@ export function ActiveSession() {
   if (!activeTabId) return null
 
   return (
-    <div className="flex-1 flex flex-col relative overflow-hidden bg-background text-on-surface">
+    <div className="chat-surface flex-1 flex flex-col relative overflow-hidden bg-background text-on-surface">
       {isMemberSession && (
         <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface-container)]">
           <div className="mx-auto max-w-[860px] flex items-center justify-between gap-4 px-8 py-2">
@@ -141,7 +141,7 @@ export function ActiveSession() {
               </>
             ) : (
               <>
-                <img src="/app-icon.png" alt="Claude Code A+BAY" className="mb-6 h-24 w-24" />
+                <img src="/app-icon.png" alt="Claude Code A+BAY" className="mb-6 h-24" />
                 <h1 className="mb-2 text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)]" style={{ fontFamily: 'var(--font-headline)' }}>
                   {t('empty.title')}
                 </h1>

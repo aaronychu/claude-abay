@@ -86,7 +86,7 @@ export function AppShell() {
   }
 
   return (
-    <div className="h-screen flex overflow-hidden bg-[var(--color-surface)]">
+    <div className="app-root-shell h-screen flex overflow-hidden bg-[var(--color-surface)]">
       <div
         data-testid="sidebar-shell"
         data-state={sidebarOpen ? 'open' : 'closed'}
