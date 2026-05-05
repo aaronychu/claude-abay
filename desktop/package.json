@@ -47,11 +47,11 @@
     "vitest": "^3.0.4"
   },
   "optionalDependencies": {
-    "@tauri-apps/api": "^2.3.0",
-    "@tauri-apps/cli": "^2.3.1",
-    "@tauri-apps/plugin-dialog": "^2.2.1",
-    "@tauri-apps/plugin-process": "^2.2.1",
-    "@tauri-apps/plugin-shell": "^2.2.1",
-    "@tauri-apps/plugin-updater": "^2.2.1"
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/cli": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-updater": "^2.10.1"
   }
 }
