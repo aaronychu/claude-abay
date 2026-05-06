@@ -89,6 +89,26 @@ struct TerminalExitPayload {
     signal: Option<String>,
 }
 
+#[derive(Serialize, Clone)]
+struct GitReviewFile {
+    path: String,
+    status: String,
+    additions: u32,
+    deletions: u32,
+    staged: bool,
+    unstaged: bool,
+    diff: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct GitReviewSnapshot {
+    repo_root: String,
+    branch: String,
+    files: Vec<GitReviewFile>,
+    total_additions: u32,
+    total_deletions: u32,
+}
+
 #[tauri::command]
 fn get_server_url(state: State<'_, ServerState>) -> Result<String, String> {
     let guard = state
@@ -411,6 +431,191 @@ fn terminal_kill(state: State<'_, TerminalState>, session_id: u32) -> Result<(),
             .map_err(|err| format!("kill terminal shell: {err}"))?;
     }
     Ok(())
+}
+
+#[tauri::command]
+fn git_review_snapshot(cwd: Option<String>) -> Result<GitReviewSnapshot, String> {
+    let cwd_path = resolve_terminal_cwd(cwd)?;
+    let repo_root = run_git(&cwd_path, &["rev-parse", "--show-toplevel"])?
+        .trim()
+        .to_string();
+    let repo_path = PathBuf::from(&repo_root);
+    let branch = run_git(&repo_path, &["branch", "--show-current"])
+        .map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                "detached".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let status_output = run_git(&repo_path, &["status", "--porcelain=v1", "-z"])?;
+    let changed_paths = parse_git_status(&status_output);
+    let mut files = Vec::new();
+    let mut total_additions = 0_u32;
+    let mut total_deletions = 0_u32;
+
+    for entry in changed_paths.into_iter().take(80) {
+        let (unstaged_additions, unstaged_deletions) =
+            diff_numstat(&repo_path, false, &entry.path).unwrap_or((0, 0));
+        let (staged_additions, staged_deletions) =
+            diff_numstat(&repo_path, true, &entry.path).unwrap_or((0, 0));
+        let additions = unstaged_additions + staged_additions;
+        let deletions = unstaged_deletions + staged_deletions;
+        total_additions += additions;
+        total_deletions += deletions;
+
+        let mut diff = diff_lines(&repo_path, false, &entry.path).unwrap_or_default();
+        if diff.is_empty() {
+            diff = diff_lines(&repo_path, true, &entry.path).unwrap_or_default();
+        }
+
+        files.push(GitReviewFile {
+            path: entry.path,
+            status: entry.status,
+            additions,
+            deletions,
+            staged: entry.staged,
+            unstaged: entry.unstaged,
+            diff,
+        });
+    }
+
+    Ok(GitReviewSnapshot {
+        repo_root,
+        branch,
+        files,
+        total_additions,
+        total_deletions,
+    })
+}
+
+#[tauri::command]
+fn git_review_action(cwd: Option<String>, action: String) -> Result<(), String> {
+    let cwd_path = resolve_terminal_cwd(cwd)?;
+    let repo_root = run_git(&cwd_path, &["rev-parse", "--show-toplevel"])?
+        .trim()
+        .to_string();
+    let repo_path = PathBuf::from(repo_root);
+
+    match action.as_str() {
+        "stage_all" => {
+            run_git(&repo_path, &["add", "-A"])?;
+        }
+        "unstage_all" => {
+            run_git(&repo_path, &["reset"])?;
+        }
+        "revert_unstaged" => {
+            run_git(&repo_path, &["restore", "."])?;
+        }
+        _ => return Err(format!("unsupported git review action: {action}")),
+    }
+
+    Ok(())
+}
+
+#[derive(Clone)]
+struct GitStatusEntry {
+    path: String,
+    status: String,
+    staged: bool,
+    unstaged: bool,
+}
+
+fn run_git(cwd: &PathBuf, args: &[&str]) -> Result<String, String> {
+    let output = StdCommand::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|err| format!("run git {}: {err}", args.join(" ")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn parse_git_status(output: &str) -> Vec<GitStatusEntry> {
+    let mut entries = Vec::new();
+    let mut parts = output.split('\0').filter(|part| !part.is_empty());
+
+    while let Some(raw) = parts.next() {
+        if raw.len() < 4 {
+            continue;
+        }
+        let status = raw[..2].to_string();
+        let mut path = raw[3..].to_string();
+
+        if status.starts_with('R') || status.starts_with('C') {
+            if let Some(new_path) = parts.next() {
+                path = new_path.to_string();
+            }
+        }
+
+        let bytes = status.as_bytes();
+        let index_status = bytes.first().copied().unwrap_or(b' ');
+        let worktree_status = bytes.get(1).copied().unwrap_or(b' ');
+        let staged = index_status != b' ' && index_status != b'?';
+        let unstaged = worktree_status != b' ' || index_status == b'?';
+
+        entries.push(GitStatusEntry {
+            path,
+            status,
+            staged,
+            unstaged,
+        });
+    }
+
+    entries
+}
+
+fn diff_numstat(repo_path: &PathBuf, cached: bool, path: &str) -> Result<(u32, u32), String> {
+    let mut args = vec!["diff", "--numstat"];
+    if cached {
+        args.push("--cached");
+    }
+    args.push("--");
+    args.push(path);
+
+    let output = run_git(repo_path, &args)?;
+    let mut additions = 0_u32;
+    let mut deletions = 0_u32;
+
+    for line in output.lines() {
+        let mut columns = line.split('\t');
+        additions += columns
+            .next()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+        deletions += columns
+            .next()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+    }
+
+    Ok((additions, deletions))
+}
+
+fn diff_lines(repo_path: &PathBuf, cached: bool, path: &str) -> Result<Vec<String>, String> {
+    let mut args = vec!["diff", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/"];
+    if cached {
+        args.push("--cached");
+    }
+    args.push("--");
+    args.push(path);
+
+    Ok(run_git(repo_path, &args)?
+        .lines()
+        .take(700)
+        .map(ToString::to_string)
+        .collect())
 }
 
 fn decode_terminal_output(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
@@ -975,6 +1180,8 @@ pub fn run() {
             get_server_url,
             restart_adapters_sidecar,
             prepare_for_update_install,
+            git_review_snapshot,
+            git_review_action,
             terminal_spawn,
             terminal_write,
             terminal_resize,

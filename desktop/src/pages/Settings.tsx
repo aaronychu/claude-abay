@@ -1602,7 +1602,7 @@ function AboutSettings() {
   return (
     <div className="w-full min-w-0 max-w-lg mx-auto flex flex-col items-center py-6">
       {/* Logo + App Name + Version */}
-      <img src="/app-icon.png" alt="Claude Code A+BAY" className="w-20 h-20 mb-4" />
+      <img src="/app-icon.png" alt="Claude Code A+BAY" className="h-20 mb-4" />
       <h1 className="text-xl font-bold text-[var(--color-text-primary)]">Claude Code A+BAY</h1>
       {version && (
         <div className="mt-1 flex items-center gap-2 text-xs text-[var(--color-text-tertiary)]">

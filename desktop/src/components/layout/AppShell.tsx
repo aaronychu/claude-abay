@@ -8,6 +8,7 @@ import { useUIStore, type SettingsTab } from '../../stores/uiStore'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { initializeDesktopServerUrl } from '../../lib/desktopRuntime'
 import { TabBar } from './TabBar'
+import { ReviewSidebar } from './ReviewSidebar'
 import { StartupErrorView } from './StartupErrorView'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -16,6 +17,7 @@ import { useTranslation } from '../../i18n'
 export function AppShell() {
   const fetchSettings = useSettingsStore((s) => s.fetchAll)
   const sidebarOpen = useUIStore((s) => s.sidebarOpen)
+  const reviewSidebarOpen = useUIStore((s) => s.reviewSidebarOpen)
   const [ready, setReady] = useState(false)
   const [startupError, setStartupError] = useState<string | null>(null)
   const t = useTranslation()
@@ -97,11 +99,13 @@ export function AppShell() {
       <main
         id="content-area"
         data-sidebar-state={sidebarOpen ? 'open' : 'closed'}
+        data-review-sidebar-state={reviewSidebarOpen ? 'open' : 'closed'}
         className="min-w-0 flex-1 flex flex-col overflow-hidden"
       >
         <TabBar />
         <ContentRouter />
       </main>
+      {reviewSidebarOpen && <ReviewSidebar />}
       <ToastContainer />
       <UpdateChecker />
     </div>

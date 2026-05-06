@@ -1,6 +1,7 @@
 import { forwardRef, useRef, useState, useEffect, useCallback } from 'react'
 import { useTabStore, type Tab } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
+import { useUIStore } from '../../stores/uiStore'
 import { useTranslation } from '../../i18n'
 import { WindowControls, showWindowControls } from './WindowControls'
 
@@ -14,6 +15,8 @@ export function TabBar() {
   const setActiveTab = useTabStore((s) => s.setActiveTab)
   const closeTab = useTabStore((s) => s.closeTab)
   const disconnectSession = useChatStore((s) => s.disconnectSession)
+  const reviewSidebarOpen = useUIStore((s) => s.reviewSidebarOpen)
+  const toggleReviewSidebar = useUIStore((s) => s.toggleReviewSidebar)
 
   const moveTab = useTabStore((s) => s.moveTab)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -273,6 +276,16 @@ export function TabBar() {
           className={`flex-shrink-0 min-h-[37px] ${showWindowControls ? 'w-3' : 'w-4'}`}
         />
       )}
+
+      <button
+        type="button"
+        onClick={toggleReviewSidebar}
+        aria-pressed={reviewSidebarOpen}
+        className={`review-toggle-button mx-2 my-1.5 ${reviewSidebarOpen ? 'review-toggle-button-active' : ''}`}
+      >
+        <span className="material-symbols-outlined text-[15px]">fact_check</span>
+        <span>Review</span>
+      </button>
 
       {canScrollRight && (
         <button onClick={() => scroll('right')} className="flex-shrink-0 w-7 h-[37px] flex items-center justify-center text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]">
