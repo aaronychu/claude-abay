@@ -11,13 +11,13 @@ vi.mock('../../i18n', () => ({
     const translations: Record<string, string> = {
       'sidebar.newSession': 'New Session',
       'sidebar.scheduled': 'Scheduled',
-      'sidebar.terminal': 'Terminal',
       'sidebar.settings': 'Settings',
       'sidebar.searchPlaceholder': 'Search sessions',
       'sidebar.noSessions': 'No sessions',
       'sidebar.noMatching': 'No matching sessions',
       'sidebar.sessionListFailed': 'Session list failed',
       'common.retry': 'Retry',
+      'common.loading': 'Loading...',
       'common.cancel': 'Cancel',
       'common.delete': 'Delete',
       'common.rename': 'Rename',
@@ -103,26 +103,6 @@ describe('Sidebar', () => {
     ])
     expect(useTabStore.getState().activeTabId).toBe('session-new-1')
     expect(screen.getByRole('complementary')).not.toHaveAttribute('data-tauri-drag-region')
-  })
-
-  it('opens each terminal click as a first-class app tab', () => {
-    render(<Sidebar />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
-
-    const terminalTabs = useTabStore.getState().tabs.filter((tab) => tab.type === 'terminal')
-    expect(terminalTabs).toHaveLength(2)
-    expect(terminalTabs.map((tab) => tab.title)).toEqual(['Terminal 1', 'Terminal 2'])
-    expect(useTabStore.getState().activeTabId).toBe(terminalTabs[1]!.sessionId)
-
-    useTabStore.getState().closeTab(terminalTabs[0]!.sessionId)
-    useTabStore.getState().openTerminalTab()
-
-    expect(useTabStore.getState().tabs.filter((tab) => tab.type === 'terminal').map((tab) => tab.title)).toEqual([
-      'Terminal 2',
-      'Terminal 3',
-    ])
   })
 
   it('shows a toast when session creation fails', async () => {
@@ -221,5 +201,14 @@ describe('Sidebar', () => {
     render(<Sidebar />)
 
     expect(screen.getByTestId('sidebar-session-list-section')).toHaveClass('flex', 'flex-1', 'min-h-0', 'flex-col')
+  })
+
+  it('shows a loading state instead of an empty session list while initial fetch is pending', () => {
+    useSessionStore.setState({ isLoading: true, sessions: [] })
+
+    render(<Sidebar />)
+
+    expect(screen.getByText('Loading...')).toBeInTheDocument()
+    expect(screen.queryByText('No sessions')).not.toBeInTheDocument()
   })
 })

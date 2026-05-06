@@ -1,8 +1,12 @@
 import { api } from './client'
+import type { AgentTaskNotification } from '../types/chat'
 import type { SessionListItem, MessageEntry } from '../types/session'
 
 type SessionsResponse = { sessions: SessionListItem[]; total: number }
-type MessagesResponse = { messages: MessageEntry[] }
+type MessagesResponse = {
+  messages: MessageEntry[]
+  taskNotifications?: AgentTaskNotification[]
+}
 type CreateSessionResponse = { sessionId: string }
 export type SessionRewindResponse = {
   target: {
@@ -139,6 +143,98 @@ export type SessionInspectionResponse = {
   errors?: Record<string, string>
 }
 
+export type WorkspaceFileStatus =
+  | 'modified'
+  | 'added'
+  | 'deleted'
+  | 'renamed'
+  | 'untracked'
+  | 'copied'
+  | 'type_changed'
+  | 'unknown'
+
+export type WorkspaceChangedFile = {
+  path: string
+  oldPath?: string
+  status: WorkspaceFileStatus
+  additions: number
+  deletions: number
+}
+
+export type WorkspaceStatusResult = {
+  state: 'ok' | 'not_git_repo' | 'missing_workdir' | 'error'
+  workDir: string
+  repoName: string | null
+  branch: string | null
+  isGitRepo: boolean
+  changedFiles: WorkspaceChangedFile[]
+  error?: string
+}
+
+export type WorkspaceReadFileResult = {
+  state: 'ok' | 'binary' | 'too_large' | 'missing' | 'error'
+  path: string
+  previewType?: 'text' | 'image'
+  content?: string
+  dataUrl?: string
+  mimeType?: string
+  language: string
+  size: number
+  truncated?: boolean
+  readBytes?: number
+  error?: string
+}
+
+export type WorkspaceTreeEntry = {
+  name: string
+  path: string
+  isDirectory: boolean
+}
+
+export type WorkspaceTreeResult = {
+  state: 'ok' | 'missing' | 'error'
+  path: string
+  entries: WorkspaceTreeEntry[]
+  error?: string
+}
+
+export type WorkspaceDiffResult = {
+  state: 'ok' | 'missing' | 'not_git_repo' | 'error'
+  path: string
+  diff?: string
+  error?: string
+}
+
+export type SessionTurnCheckpoint = {
+  target: SessionRewindResponse['target']
+  conversation?: SessionRewindResponse['conversation']
+  code: SessionRewindResponse['code']
+  workDir?: string
+}
+
+export type SessionTurnCheckpointsResponse = {
+  checkpoints: SessionTurnCheckpoint[]
+}
+
+export type TurnCheckpointDiffResult = WorkspaceDiffResult & {
+  target?: SessionRewindResponse['target']
+  workDir?: string
+}
+
+function buildWorkspacePath(
+  sessionId: string,
+  resource: 'status' | 'tree' | 'file' | 'diff',
+  workspacePath?: string,
+) {
+  const query = new URLSearchParams()
+  if (typeof workspacePath === 'string' && workspacePath.length > 0) {
+    query.set('path', workspacePath)
+  }
+
+  const qs = query.toString()
+  return `/api/sessions/${sessionId}/workspace/${resource}${qs ? `?${qs}` : ''}`
+}
+
 export const sessionsApi = {
   list(params?: { project?: string; limit?: number; offset?: number }) {
     const query = new URLSearchParams()
@@ -178,13 +274,55 @@ export const sessionsApi = {
     return api.get<{ commands: Array<{ name: string; description: string }> }>(`/api/sessions/${sessionId}/slash-commands`)
   },
 
-  getInspection(sessionId: string, options?: { includeContext?: boolean; timeout?: number }) {
-    const query = options?.includeContext === undefined
-      ? ''
-      : `?includeContext=${options.includeContext ? '1' : '0'}`
-    return api.get<SessionInspectionResponse>(`/api/sessions/${sessionId}/inspection${query}`, {
+  getInspection(sessionId: string, options?: { includeContext?: boolean; timeout?: number; contextOnly?: boolean }) {
+    const query = new URLSearchParams()
+    if (options?.includeContext !== undefined) {
+      query.set('includeContext', options.includeContext ? '1' : '0')
+    }
+    if (options?.contextOnly) {
+      query.set('contextOnly', '1')
+    }
+    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    return api.get<SessionInspectionResponse>(`/api/sessions/${sessionId}/inspection${suffix}`, {
       timeout: options?.timeout ?? (options?.includeContext ? 45_000 : 25_000),
     })
+  },
+
+  getWorkspaceStatus(sessionId: string) {
+    return api.get<WorkspaceStatusResult>(buildWorkspacePath(sessionId, 'status'))
+  },
+
+  getWorkspaceTree(sessionId: string, workspacePath = '') {
+    return api.get<WorkspaceTreeResult>(buildWorkspacePath(sessionId, 'tree', workspacePath))
+  },
+
+  getWorkspaceFile(sessionId: string, workspacePath: string) {
+    return api.get<WorkspaceReadFileResult>(buildWorkspacePath(sessionId, 'file', workspacePath))
+  },
+
+  getWorkspaceDiff(sessionId: string, workspacePath: string) {
+    return api.get<WorkspaceDiffResult>(buildWorkspacePath(sessionId, 'diff', workspacePath))
+  },
+
+  getTurnCheckpoints(sessionId: string) {
+    return api.get<SessionTurnCheckpointsResponse>(`/api/sessions/${sessionId}/turn-checkpoints`)
+  },
+
+  getTurnCheckpointDiff(
+    sessionId: string,
+    targetUserMessageId: string,
+    workspacePath: string,
+    userMessageIndex?: number,
+  ) {
+    const query = new URLSearchParams()
+    query.set('targetUserMessageId', targetUserMessageId)
+    if (Number.isInteger(userMessageIndex)) {
+      query.set('userMessageIndex', String(userMessageIndex))
+    }
+    query.set('path', workspacePath)
+    return api.get<TurnCheckpointDiffResult>(
+      `/api/sessions/${sessionId}/turn-checkpoints/diff?${query.toString()}`,
+    )
   },
 
   rewind(sessionId: string, body: {

@@ -21,6 +21,7 @@ type Props = {
   onChange?: (modelId: string) => void
   runtimeKey?: string
   disabled?: boolean
+  compact?: boolean
 }
 
 function officialChoices(availableModels: ModelInfo[], isDefault: boolean, officialName: string): ProviderChoice {
@@ -105,6 +106,7 @@ export function ModelSelector({
   onChange,
   runtimeKey,
   disabled = false,
+  compact = false,
 }: Props = {}) {
   const t = useTranslation()
   const {
@@ -229,13 +231,15 @@ export function ModelSelector({
       <button
         onClick={() => !disabled && setOpen(!open)}
         disabled={disabled}
-        className="flex max-w-[280px] items-center gap-2 rounded-full bg-[var(--color-surface-container-low)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+        className={`flex items-center gap-2 rounded-full bg-[var(--color-surface-container-low)] text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50 ${
+          compact ? 'max-w-[152px] px-2.5 py-1.5' : 'max-w-[280px] px-3 py-1.5'
+        }`}
       >
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--color-text-primary)]">
+          <span className={`${compact ? 'text-xs' : 'text-sm'} min-w-0 flex-1 truncate font-semibold text-[var(--color-text-primary)]`}>
             {buttonModelLabel}
           </span>
-          {buttonProviderLabel && (
+          {!compact && buttonProviderLabel && (
             <span className="max-w-[108px] flex-shrink-0 truncate text-[11px] text-[var(--color-text-tertiary)]">
               {buttonProviderLabel}
             </span>

@@ -18,6 +18,7 @@ const TIME_GROUP_ORDER: TimeGroup[] = ['today', 'yesterday', 'last7days', 'last3
 export function Sidebar() {
   const sessions = useSessionStore((s) => s.sessions)
   const selectedProjects = useSessionStore((s) => s.selectedProjects)
+  const isLoading = useSessionStore((s) => s.isLoading)
   const error = useSessionStore((s) => s.error)
   const fetchSessions = useSessionStore((s) => s.fetchSessions)
   const deleteSession = useSessionStore((s) => s.deleteSession)
@@ -26,7 +27,6 @@ export function Sidebar() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen)
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const activeTabId = useTabStore((s) => s.activeTabId)
-  const activeTabType = useTabStore((s) => s.tabs.find((tab) => tab.sessionId === s.activeTabId)?.type)
   const closeTab = useTabStore((s) => s.closeTab)
   const disconnectSession = useChatStore((s) => s.disconnectSession)
   const [searchQuery, setSearchQuery] = useState('')
@@ -64,6 +64,7 @@ export function Sidebar() {
   }, [sessions, selectedProjects, searchQuery])
 
   const timeGroups = useMemo(() => groupByTime(filteredSessions), [filteredSessions])
+  const showInitialLoading = isLoading && sessions.length === 0
 
   const handleContextMenu = useCallback((e: React.MouseEvent, id: string) => {
     e.preventDefault()
@@ -101,7 +102,7 @@ export function Sidebar() {
 
   useEffect(() => {
     if (!isTauri) return
-    import(/* @vite-ignore */ '@tauri-apps/api/window')
+    import('@tauri-apps/api/window')
       .then(({ getCurrentWindow }) => {
         const win = getCurrentWindow()
         startDraggingRef.current = () => win.startDragging()
@@ -203,15 +204,6 @@ export function Sidebar() {
         >
           {t('sidebar.scheduled')}
         </NavItem>
-        <NavItem
-          active={activeTabType === 'terminal'}
-          collapsed={!sidebarOpen}
-          label={t('sidebar.terminal')}
-          onClick={() => useTabStore.getState().openTerminalTab()}
-          icon={<span className="material-symbols-outlined text-[18px]">terminal</span>}
-        >
-          {t('sidebar.terminal')}
-        </NavItem>
       </div>
 
       {sidebarOpen ? (
@@ -255,7 +247,11 @@ export function Sidebar() {
                   </button>
                 </div>
               )}
-              {filteredSessions.length === 0 && (
+              {showInitialLoading ? (
+                <div className="px-3 py-4 text-center text-xs text-[var(--color-text-tertiary)]">
+                  {t('common.loading')}
+                </div>
+              ) : filteredSessions.length === 0 && (
                 <div className="px-3 py-4 text-center text-xs text-[var(--color-text-tertiary)]">
                   {searchQuery ? t('sidebar.noMatching') : t('sidebar.noSessions')}
                 </div>

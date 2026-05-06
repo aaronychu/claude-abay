@@ -1,13 +1,37 @@
 import { forwardRef, useRef, useState, useEffect, useCallback } from 'react'
-import { useTabStore, type Tab } from '../../stores/tabStore'
+import {
+  SCHEDULED_TAB_ID,
+  SETTINGS_TAB_ID,
+  TERMINAL_TAB_PREFIX,
+  useTabStore,
+  type Tab,
+} from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useTranslation } from '../../i18n'
 import { WindowControls, showWindowControls } from './WindowControls'
+import { Folder, FolderOpen, SquareTerminal } from 'lucide-react'
 
 const TAB_WIDTH = 180
 const DRAG_START_THRESHOLD = 4
 const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
+
+function isSessionTab(tab: Tab | null) {
+  if (!tab) return false
+  const tabType = (tab as Partial<Tab>).type
+  if (tabType === 'session') return true
+  if (tabType) return false
+  return isSessionTabId(tab.sessionId)
+}
+
+function isSessionTabId(tabId: string | null) {
+  if (!tabId) return false
+  return tabId !== SETTINGS_TAB_ID &&
+    tabId !== SCHEDULED_TAB_ID &&
+    !tabId.startsWith(TERMINAL_TAB_PREFIX)
+}
 
 export function TabBar() {
   const tabs = useTabStore((s) => s.tabs)
@@ -15,6 +39,14 @@ export function TabBar() {
   const setActiveTab = useTabStore((s) => s.setActiveTab)
   const closeTab = useTabStore((s) => s.closeTab)
   const disconnectSession = useChatStore((s) => s.disconnectSession)
+  const activeTab = tabs.find((tab) => tab.sessionId === activeTabId) ?? null
+  const isActiveSessionTab = isSessionTab(activeTab) || isSessionTabId(activeTabId)
+  const isWorkspacePanelOpen = useWorkspacePanelStore((state) =>
+    activeTabId && isActiveSessionTab ? state.isPanelOpen(activeTabId) : false,
+  )
+  const isTerminalPanelOpen = useTerminalPanelStore((state) =>
+    activeTabId && isActiveSessionTab ? state.isPanelOpen(activeTabId) : false,
+  )
   const reviewSidebarOpen = useUIStore((s) => s.reviewSidebarOpen)
   const toggleReviewSidebar = useUIStore((s) => s.toggleReviewSidebar)
 
@@ -36,7 +68,7 @@ export function TabBar() {
 
   useEffect(() => {
     if (!isTauri) return
-    import(/* @vite-ignore */ '@tauri-apps/api/window')
+    import('@tauri-apps/api/window')
       .then(({ getCurrentWindow }) => {
         const win = getCurrentWindow()
         startDraggingRef.current = () => win.startDragging()
@@ -77,12 +109,20 @@ export function TabBar() {
     el.scrollBy({ left: direction === 'left' ? -TAB_WIDTH : TAB_WIDTH, behavior: 'smooth' })
   }
 
+  const closeTabWithCleanup = useCallback((tab: Tab) => {
+    if (isSessionTab(tab)) {
+      useWorkspacePanelStore.getState().clearSession(tab.sessionId)
+      useTerminalPanelStore.getState().clearSession(tab.sessionId)
+    }
+    closeTab(tab.sessionId)
+  }, [closeTab])
+
   const handleClose = (sessionId: string) => {
     // Special tabs can always be closed directly
     const tab = tabs.find((t) => t.sessionId === sessionId)
     if (!tab) return
-    if (tab.type !== 'session') {
-      closeTab(sessionId)
+    if (!isSessionTab(tab)) {
+      closeTabWithCleanup(tab)
       return
     }
 
@@ -95,7 +135,7 @@ export function TabBar() {
     }
 
     disconnectSession(sessionId)
-    closeTab(sessionId)
+    closeTabWithCleanup(tab)
   }
 
   const handleContextMenu = (e: React.MouseEvent, sessionId: string) => {
@@ -107,8 +147,8 @@ export function TabBar() {
     setContextMenu(null)
     const otherTabs = tabs.filter((t) => t.sessionId !== sessionId)
     for (const tab of otherTabs) {
-      if (tab.type === 'session') disconnectSession(tab.sessionId)
-      closeTab(tab.sessionId)
+      if (isSessionTab(tab)) disconnectSession(tab.sessionId)
+      closeTabWithCleanup(tab)
     }
   }
 
@@ -117,8 +157,8 @@ export function TabBar() {
     const idx = tabs.findIndex((t) => t.sessionId === sessionId)
     const leftTabs = tabs.slice(0, idx)
     for (const tab of leftTabs) {
-      if (tab.type === 'session') disconnectSession(tab.sessionId)
-      closeTab(tab.sessionId)
+      if (isSessionTab(tab)) disconnectSession(tab.sessionId)
+      closeTabWithCleanup(tab)
     }
   }
 
@@ -127,16 +167,16 @@ export function TabBar() {
     const idx = tabs.findIndex((t) => t.sessionId === sessionId)
     const rightTabs = tabs.slice(idx + 1)
     for (const tab of rightTabs) {
-      if (tab.type === 'session') disconnectSession(tab.sessionId)
-      closeTab(tab.sessionId)
+      if (isSessionTab(tab)) disconnectSession(tab.sessionId)
+      closeTabWithCleanup(tab)
     }
   }
 
   const handleCloseAll = () => {
     setContextMenu(null)
     for (const tab of tabs) {
-      if (tab.type === 'session') disconnectSession(tab.sessionId)
-      closeTab(tab.sessionId)
+      if (isSessionTab(tab)) disconnectSession(tab.sessionId)
+      closeTabWithCleanup(tab)
     }
   }
 
@@ -231,12 +271,10 @@ export function TabBar() {
     void startDragging().catch(() => {})
   }, [])
 
-  if (tabs.length === 0 && !showWindowControls) return null
-
   return (
     <div
       data-testid="tab-bar"
-      className="tab-bar-surface flex items-stretch bg-[var(--color-surface-container)] min-h-[37px] select-none border-b border-[var(--color-border)]"
+      className="flex items-stretch bg-[var(--color-surface-container)] min-h-[37px] select-none border-b border-[var(--color-border)]"
     >
 
       {canScrollLeft && (
@@ -268,6 +306,40 @@ export function TabBar() {
         ))}
       </div>
 
+      <div className="flex shrink-0 items-center gap-1 border-l border-[var(--color-border)]/70 px-2">
+        <ToolbarIconButton
+          icon={<SquareTerminal size={17} strokeWidth={1.9} />}
+          label={t('tabs.openTerminal')}
+          onClick={() => {
+            if (activeTabId && isActiveSessionTab) {
+              useTerminalPanelStore.getState().togglePanel(activeTabId)
+              return
+            }
+            useTabStore.getState().openTerminalTab()
+          }}
+          active={isTerminalPanelOpen}
+        />
+        {isActiveSessionTab && activeTabId && (
+          <ToolbarIconButton
+            icon={isWorkspacePanelOpen ? <FolderOpen size={18} strokeWidth={1.9} /> : <Folder size={18} strokeWidth={1.9} />}
+            label={t(isWorkspacePanelOpen ? 'tabs.hideWorkspace' : 'tabs.showWorkspace')}
+            onClick={() => useWorkspacePanelStore.getState().togglePanel(activeTabId)}
+            active={isWorkspacePanelOpen}
+          />
+        )}
+        <button
+          type="button"
+          className={`review-toggle-button ${reviewSidebarOpen ? 'review-toggle-button-active' : ''}`}
+          onClick={toggleReviewSidebar}
+          title="Review changes"
+          aria-label="Review changes"
+          aria-pressed={reviewSidebarOpen}
+        >
+          <span className="material-symbols-outlined text-[15px]">fact_check</span>
+          <span>Review</span>
+        </button>
+      </div>
+
       {isTauri && (
         <div
           data-testid="tab-bar-drag-gutter"
@@ -276,16 +348,6 @@ export function TabBar() {
           className={`flex-shrink-0 min-h-[37px] ${showWindowControls ? 'w-3' : 'w-4'}`}
         />
       )}
-
-      <button
-        type="button"
-        onClick={toggleReviewSidebar}
-        aria-pressed={reviewSidebarOpen}
-        className={`review-toggle-button mx-2 my-1.5 ${reviewSidebarOpen ? 'review-toggle-button-active' : ''}`}
-      >
-        <span className="material-symbols-outlined text-[15px]">fact_check</span>
-        <span>Review</span>
-      </button>
 
       {canScrollRight && (
         <button onClick={() => scroll('right')} className="flex-shrink-0 w-7 h-[37px] flex items-center justify-center text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]">
@@ -344,7 +406,11 @@ export function TabBar() {
                 {t('common.cancel')}
               </button>
               <button
-                onClick={() => { closeTab(closingTabId); setClosingTabId(null) }}
+                onClick={() => {
+                  const tab = tabs.find((item) => item.sessionId === closingTabId)
+                  if (tab) closeTabWithCleanup(tab)
+                  setClosingTabId(null)
+                }}
                 className="px-3 py-1.5 text-xs rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
               >
                 {t('tabs.closeConfirmKeep')}
@@ -353,7 +419,8 @@ export function TabBar() {
                 onClick={() => {
                   useChatStore.getState().stopGeneration(closingTabId)
                   disconnectSession(closingTabId)
-                  closeTab(closingTabId)
+                  const tab = tabs.find((item) => item.sessionId === closingTabId)
+                  if (tab) closeTabWithCleanup(tab)
                   setClosingTabId(null)
                 }}
                 className="px-3 py-1.5 text-xs rounded-lg bg-[var(--color-brand)] text-white hover:opacity-90"
@@ -391,7 +458,7 @@ const TabItem = forwardRef<HTMLDivElement, {
         ${isDragging ? 'z-20 cursor-grabbing' : 'cursor-grab'}
         transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
         ${isActive
-          ? 'bg-[var(--color-surface)] shadow-[inset_0_-1px_0_rgba(255,255,255,0.72)]'
+          ? 'bg-[var(--color-surface)] shadow-[inset_0_-2px_0_var(--color-brand)]'
           : 'bg-transparent hover:bg-[var(--color-surface-hover)]'
         }
         ${isDragging ? 'opacity-95 shadow-[0_10px_24px_rgba(0,0,0,0.18)] ring-1 ring-[var(--color-border)]' : ''}
@@ -436,3 +503,32 @@ const TabItem = forwardRef<HTMLDivElement, {
   )
 })
 TabItem.displayName = 'TabItem'
+
+function ToolbarIconButton({
+  icon,
+  label,
+  onClick,
+  active = false,
+}: {
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+  active?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      data-active={active ? 'true' : 'false'}
+      className={`inline-flex h-8 w-8 items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] ${
+        active
+          ? 'bg-[var(--color-surface-hover)] text-[var(--color-text-primary)]'
+          : 'text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]'
+      }`}
+    >
+      {icon}
+    </button>
+  )
+}

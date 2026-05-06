@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
@@ -12,6 +12,12 @@ import type { ProviderPreset } from '../types/providerPreset'
 const MOCK_DELETE_PROVIDER = vi.fn()
 const MOCK_GET_SETTINGS = vi.fn()
 const MOCK_UPDATE_SETTINGS = vi.fn()
+const desktopNotificationsMock = vi.hoisted(() => ({
+  getDesktopNotificationPermission: vi.fn(),
+  notifyDesktop: vi.fn(),
+  requestDesktopNotificationPermission: vi.fn(),
+  openDesktopNotificationSettings: vi.fn(),
+}))
 const providerStoreState = {
   providers: [] as SavedProvider[],
   activeId: null as string | null,
@@ -46,6 +52,8 @@ vi.mock('../api/providers', () => ({
     updateSettings: MOCK_UPDATE_SETTINGS,
   },
 }))
+
+vi.mock('../lib/desktopNotifications', () => desktopNotificationsMock)
 
 vi.mock('../components/settings/ClaudeOfficialLogin', () => ({
   ClaudeOfficialLogin: () => <div data-testid="claude-official-login" />,
@@ -87,6 +95,14 @@ vi.mock('../components/chat/CodeViewer', () => ({
 describe('Settings > General tab', () => {
   beforeEach(() => {
     MOCK_DELETE_PROVIDER.mockReset()
+    desktopNotificationsMock.getDesktopNotificationPermission.mockReset()
+    desktopNotificationsMock.notifyDesktop.mockReset()
+    desktopNotificationsMock.requestDesktopNotificationPermission.mockReset()
+    desktopNotificationsMock.openDesktopNotificationSettings.mockReset()
+    desktopNotificationsMock.getDesktopNotificationPermission.mockResolvedValue('default')
+    desktopNotificationsMock.notifyDesktop.mockResolvedValue(true)
+    desktopNotificationsMock.requestDesktopNotificationPermission.mockResolvedValue('granted')
+    desktopNotificationsMock.openDesktopNotificationSettings.mockResolvedValue(true)
     MOCK_GET_SETTINGS.mockResolvedValue({})
     MOCK_UPDATE_SETTINGS.mockResolvedValue({})
     providerStoreState.providers = []
@@ -106,9 +122,21 @@ describe('Settings > General tab', () => {
 
     useSettingsStore.setState({
       locale: 'en',
+      thinkingEnabled: true,
       skipWebFetchPreflight: true,
+      desktopNotificationsEnabled: true,
+      webSearch: { mode: 'auto', tavilyApiKey: '', braveApiKey: '' },
+      setThinkingEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
+        useSettingsStore.setState({ thinkingEnabled: enabled })
+      }),
       setSkipWebFetchPreflight: vi.fn().mockImplementation(async (enabled: boolean) => {
         useSettingsStore.setState({ skipWebFetchPreflight: enabled })
+      }),
+      setDesktopNotificationsEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
+        useSettingsStore.setState({ desktopNotificationsEnabled: enabled })
+      }),
+      setWebSearch: vi.fn().mockImplementation(async (webSearch) => {
+        useSettingsStore.setState({ webSearch })
       }),
     })
 
@@ -148,6 +176,98 @@ describe('Settings > General tab', () => {
     fireEvent.click(toggle)
 
     expect(useSettingsStore.getState().setSkipWebFetchPreflight).toHaveBeenCalledWith(false)
+  })
+
+  it('lets the user disable thinking mode for new sessions', () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+
+    const toggle = screen.getByLabelText('Enable thinking mode')
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+
+    expect(useSettingsStore.getState().setThinkingEnabled).toHaveBeenCalledWith(false)
+  })
+
+  it('lets the user disable desktop system notifications', () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+
+    const toggle = screen.getByLabelText('Enable system notifications')
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+
+    expect(useSettingsStore.getState().setDesktopNotificationsEnabled).toHaveBeenCalledWith(false)
+    expect(desktopNotificationsMock.requestDesktopNotificationPermission).not.toHaveBeenCalled()
+  })
+
+  it('requests native notification permission when desktop notifications are enabled', async () => {
+    useSettingsStore.setState({ desktopNotificationsEnabled: false })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Enable system notifications'))
+    })
+
+    expect(useSettingsStore.getState().setDesktopNotificationsEnabled).toHaveBeenCalledWith(true)
+    await vi.waitFor(() => {
+      expect(desktopNotificationsMock.requestDesktopNotificationPermission).toHaveBeenCalledTimes(1)
+    })
+    expect(desktopNotificationsMock.notifyDesktop).toHaveBeenCalledWith({
+      title: 'Claude Code A+BAY notifications are enabled',
+      body: 'Permission prompts and completed agent replies will now use macOS notifications.',
+    })
+  })
+
+  it('opens system settings when enabling notifications finds system denial', async () => {
+    useSettingsStore.setState({ desktopNotificationsEnabled: false })
+    desktopNotificationsMock.requestDesktopNotificationPermission.mockResolvedValue('denied')
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Enable system notifications'))
+    })
+
+    await vi.waitFor(() => {
+      expect(desktopNotificationsMock.openDesktopNotificationSettings).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('saves WebSearch fallback provider settings', () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tavily' }))
+    fireEvent.change(screen.getByLabelText('Tavily API key'), {
+      target: { value: 'tvly-test-key' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(useSettingsStore.getState().setWebSearch).toHaveBeenCalledWith({
+      mode: 'tavily',
+      tavilyApiKey: 'tvly-test-key',
+      braveApiKey: '',
+    })
+  })
+
+  it('links to WebSearch provider API key dashboards', () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('General'))
+
+    expect(screen.getByRole('link', { name: 'Get Tavily API key' })).toHaveAttribute(
+      'href',
+      'https://app.tavily.com/home',
+    )
+    expect(screen.getByRole('link', { name: 'Get Brave Search API key' })).toHaveAttribute(
+      'href',
+      'https://api-dashboard.search.brave.com/app/keys',
+    )
   })
 
   it('keeps extension tabs available alongside the terminal tab', () => {

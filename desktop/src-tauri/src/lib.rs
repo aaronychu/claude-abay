@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    fs,
     io::{Error as IoError, ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
@@ -14,20 +15,150 @@ use std::{
 };
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use serde::{Deserialize, Serialize};
+use tauri::menu::MenuBuilder;
+#[cfg(target_os = "macos")]
+use tauri::menu::{MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Emitter;
-use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WindowEvent};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
 };
 
+#[cfg(target_os = "macos")]
+mod macos_notifications {
+    use std::ffi::{CStr, CString};
+    use std::os::raw::{c_char, c_int};
+
+    const ERROR_BUFFER_LEN: usize = 1024;
+
+    unsafe extern "C" {
+        fn cchh_notification_authorization_status(
+            error_buffer: *mut c_char,
+            error_buffer_len: usize,
+        ) -> c_int;
+        fn cchh_request_notification_authorization(
+            error_buffer: *mut c_char,
+            error_buffer_len: usize,
+        ) -> bool;
+        fn cchh_send_user_notification(
+            title: *const c_char,
+            body: *const c_char,
+            error_buffer: *mut c_char,
+            error_buffer_len: usize,
+        ) -> bool;
+    }
+
+    fn new_error_buffer() -> [c_char; ERROR_BUFFER_LEN] {
+        [0; ERROR_BUFFER_LEN]
+    }
+
+    fn read_error(buffer: &[c_char; ERROR_BUFFER_LEN]) -> Option<String> {
+        let message = unsafe { CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .trim()
+            .to_string();
+        if message.is_empty() {
+            None
+        } else {
+            Some(message)
+        }
+    }
+
+    fn permission_from_status(status: c_int) -> &'static str {
+        match status {
+            1 => "denied",
+            2 | 3 | 4 => "granted",
+            _ => "default",
+        }
+    }
+
+    pub fn permission_state() -> Result<String, String> {
+        let mut error_buffer = new_error_buffer();
+        let status = unsafe {
+            cchh_notification_authorization_status(error_buffer.as_mut_ptr(), ERROR_BUFFER_LEN)
+        };
+
+        if status < 0 {
+            return Err(read_error(&error_buffer)
+                .unwrap_or_else(|| "failed to read macOS notification permission".to_string()));
+        }
+
+        Ok(permission_from_status(status).to_string())
+    }
+
+    pub fn request_permission() -> Result<String, String> {
+        let mut error_buffer = new_error_buffer();
+        let granted = unsafe {
+            cchh_request_notification_authorization(error_buffer.as_mut_ptr(), ERROR_BUFFER_LEN)
+        };
+
+        if granted {
+            return Ok("granted".to_string());
+        }
+
+        if let Some(error) = read_error(&error_buffer) {
+            return Err(error);
+        }
+
+        permission_state()
+    }
+
+    pub fn send_notification(title: String, body: Option<String>) -> Result<bool, String> {
+        let title = CString::new(title)
+            .map_err(|_| "notification title contains an unsupported NUL byte".to_string())?;
+        let body = body
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| "notification body contains an unsupported NUL byte".to_string())?;
+
+        let mut error_buffer = new_error_buffer();
+        let sent = unsafe {
+            cchh_send_user_notification(
+                title.as_ptr(),
+                body.as_ref()
+                    .map_or(std::ptr::null(), |value| value.as_ptr()),
+                error_buffer.as_mut_ptr(),
+                ERROR_BUFFER_LEN,
+            )
+        };
+
+        if sent {
+            return Ok(true);
+        }
+
+        match read_error(&error_buffer).as_deref() {
+            Some("not_authorized") | None => Ok(false),
+            Some(error) => Err(error.to_string()),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod macos_notifications {
+    pub fn permission_state() -> Result<String, String> {
+        Ok("unsupported".to_string())
+    }
+
+    pub fn request_permission() -> Result<String, String> {
+        Ok("unsupported".to_string())
+    }
+
+    pub fn send_notification(_title: String, _body: Option<String>) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
 const SERVER_STARTUP_LOG_LIMIT: usize = 80;
 const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_QUIT_ID: &str = "tray_quit";
+const WINDOW_STATE_FILE: &str = "window-state.json";
+const MIN_WINDOW_WIDTH: u32 = 960;
+const MIN_WINDOW_HEIGHT: u32 = 640;
+const MIN_VISIBLE_PIXELS: i64 = 64;
 
 #[derive(Default)]
 struct ServerState(Mutex<ServerStatus>);
@@ -48,14 +179,23 @@ struct AppExitState {
     is_quitting: Mutex<bool>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+struct StoredWindowState {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    maximized: bool,
+}
+
 /// 与 ServerState 平级的 adapter 子进程状态。
 ///
-/// adapter sidecar（claude-sidecar adapters --feishu --telegram）的生命周期
+/// adapter sidecar（claude-sidecar adapters --telegram 等）的生命周期
 /// 跟 server 不同：它没有 HTTP 端口可探活，没配凭据时会自己干净退出，
-/// 而且需要支持运行时热重启 —— 用户在设置页保存飞书 / Telegram 凭据后，
+/// 而且需要支持运行时热重启 —— 用户在设置页保存 IM 凭据后，
 /// 前端会通过 invoke('restart_adapters_sidecar') 来重启它，让新凭据生效。
 #[derive(Default)]
-struct AdapterState(Mutex<Option<CommandChild>>);
+struct AdapterState(Mutex<Vec<CommandChild>>);
 
 #[derive(Default)]
 struct TerminalState {
@@ -126,7 +266,7 @@ fn get_server_url(state: State<'_, ServerState>) -> Result<String, String> {
         .unwrap_or_else(|| "desktop server did not start".to_string()))
 }
 
-/// 前端在设置页保存飞书 / Telegram 凭据后调用，触发 adapter sidecar 热重启。
+/// 前端在设置页保存飞书 / Telegram / 微信凭据后调用，触发 adapter sidecar 热重启。
 ///
 /// 流程：
 ///   1. kill 当前 adapter 子进程（如果在跑）
@@ -177,10 +317,187 @@ fn should_hide_to_tray(app: &AppHandle, label: &str) -> bool {
         .unwrap_or(true)
 }
 
+fn is_persistable_window_state(state: &StoredWindowState) -> bool {
+    state.width >= MIN_WINDOW_WIDTH && state.height >= MIN_WINDOW_HEIGHT
+}
+
+fn has_meaningful_intersection(
+    state: &StoredWindowState,
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_width: u32,
+    monitor_height: u32,
+) -> bool {
+    let left = state.x as i64;
+    let top = state.y as i64;
+    let right = left + state.width as i64;
+    let bottom = top + state.height as i64;
+
+    let monitor_left = monitor_x as i64;
+    let monitor_top = monitor_y as i64;
+    let monitor_right = monitor_left + monitor_width as i64;
+    let monitor_bottom = monitor_top + monitor_height as i64;
+
+    right > monitor_left + MIN_VISIBLE_PIXELS
+        && bottom > monitor_top + MIN_VISIBLE_PIXELS
+        && left < monitor_right - MIN_VISIBLE_PIXELS
+        && top < monitor_bottom - MIN_VISIBLE_PIXELS
+}
+
+fn is_window_state_visible_on_any_monitor(
+    state: &StoredWindowState,
+    monitors: &[tauri::Monitor],
+) -> bool {
+    if monitors.is_empty() {
+        return true;
+    }
+
+    monitors.iter().any(|monitor| {
+        let position = monitor.position();
+        let size = monitor.size();
+        has_meaningful_intersection(state, position.x, position.y, size.width, size.height)
+    })
+}
+
+fn window_state_path(app: &AppHandle) -> Option<PathBuf> {
+    match app.path().app_config_dir() {
+        Ok(dir) => Some(dir.join(WINDOW_STATE_FILE)),
+        Err(err) => {
+            eprintln!("[desktop] failed to resolve app config dir: {err}");
+            None
+        }
+    }
+}
+
+fn read_stored_window_state(app: &AppHandle) -> Option<StoredWindowState> {
+    let path = window_state_path(app)?;
+    let data = match fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(err) if err.kind() == ErrorKind::NotFound => return None,
+        Err(err) => {
+            eprintln!(
+                "[desktop] failed to read window state {}: {err}",
+                path.display()
+            );
+            return None;
+        }
+    };
+
+    match serde_json::from_str::<StoredWindowState>(&data) {
+        Ok(state) if is_persistable_window_state(&state) => Some(state),
+        Ok(_) => None,
+        Err(err) => {
+            eprintln!(
+                "[desktop] failed to parse window state {}: {err}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn write_stored_window_state(app: &AppHandle, state: &StoredWindowState) {
+    if !is_persistable_window_state(state) {
+        return;
+    }
+
+    let Some(path) = window_state_path(app) else {
+        return;
+    };
+
+    if let Some(parent) = path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            eprintln!(
+                "[desktop] failed to create window state directory {}: {err}",
+                parent.display()
+            );
+            return;
+        }
+    }
+
+    let data = match serde_json::to_string_pretty(state) {
+        Ok(data) => data,
+        Err(err) => {
+            eprintln!("[desktop] failed to serialize window state: {err}");
+            return;
+        }
+    };
+
+    if let Err(err) = fs::write(&path, data) {
+        eprintln!(
+            "[desktop] failed to write window state {}: {err}",
+            path.display()
+        );
+    }
+}
+
+fn capture_window_state(window: &tauri::WebviewWindow) -> Option<StoredWindowState> {
+    if window.is_minimized().unwrap_or(false) {
+        return None;
+    }
+
+    let position = match window.outer_position() {
+        Ok(position) => position,
+        Err(err) => {
+            eprintln!("[desktop] failed to read window position: {err}");
+            return None;
+        }
+    };
+    let size = match window.outer_size() {
+        Ok(size) => size,
+        Err(err) => {
+            eprintln!("[desktop] failed to read window size: {err}");
+            return None;
+        }
+    };
+
+    let state = StoredWindowState {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+        maximized: window.is_maximized().unwrap_or(false),
+    };
+
+    is_persistable_window_state(&state).then_some(state)
+}
+
+fn save_main_window_state(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+    let Some(state) = capture_window_state(&window) else {
+        return;
+    };
+
+    write_stored_window_state(app, &state);
+}
+
+fn restore_main_window_state(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+    let Some(state) = read_stored_window_state(app) else {
+        return;
+    };
+
+    let monitors = window.available_monitors().unwrap_or_default();
+    if !is_window_state_visible_on_any_monitor(&state, &monitors) {
+        return;
+    }
+
+    let _ = window.unmaximize();
+    let _ = window.set_size(PhysicalSize::new(state.width, state.height));
+    let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
+    if state.maximized {
+        let _ = window.maximize();
+    }
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        let _ = window.unminimize();
         let _ = window.show();
+        let _ = window.unminimize();
         let _ = window.set_focus();
     }
 }
@@ -618,6 +935,21 @@ fn diff_lines(repo_path: &PathBuf, cached: bool, path: &str) -> Result<Vec<Strin
         .collect())
 }
 
+#[tauri::command]
+fn macos_notification_permission_state() -> Result<String, String> {
+    macos_notifications::permission_state()
+}
+
+#[tauri::command]
+fn macos_request_notification_permission() -> Result<String, String> {
+    macos_notifications::request_permission()
+}
+
+#[tauri::command]
+fn macos_send_notification(title: String, body: Option<String>) -> Result<bool, String> {
+    macos_notifications::send_notification(title, body)
+}
+
 fn decode_terminal_output(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
     pending.extend_from_slice(chunk);
     let mut output = String::new();
@@ -956,9 +1288,12 @@ fn stop_server_sidecar(app: &AppHandle) {
     }
 }
 
-/// 启动 adapter sidecar。返回 Result 主要为了把"无法 spawn"和"spawn 后立刻
-/// 退出（凭据缺失）"区分开 —— 后者不算错误，是正常 default 状态。
-fn start_adapters_sidecar(app: &AppHandle) -> Result<CommandChild, String> {
+/// 启动 adapter sidecars。每个平台单独一个进程，避免某个平台的 SDK / long polling
+/// 影响其它平台（Telegram 尤其要求同一个 Bot Token 只有一个活跃 consumer）。
+fn start_adapters_sidecars(app: &AppHandle) -> Result<Vec<CommandChild>, String> {
+    #[cfg(unix)]
+    kill_stale_unix_adapter_sidecars();
+
     let app_root = resolve_app_root(app)?;
     let app_root_arg = app_root.to_string_lossy().to_string();
 
@@ -989,63 +1324,73 @@ fn start_adapters_sidecar(app: &AppHandle) -> Result<CommandChild, String> {
         server_http_url.clone()
     };
 
-    let mut sidecar = app
-        .shell()
-        .sidecar("claude-sidecar")
-        .map_err(|err| format!("resolve sidecar: {err}"))?;
-    for (key, value) in terminal_environment(&default_shell()) {
-        sidecar = sidecar.env(key, value);
-    }
-    let sidecar = sidecar.env("ADAPTER_SERVER_URL", &server_ws_url).args([
-        "adapters",
-        "--app-root",
-        &app_root_arg,
-        "--feishu",
-        "--telegram",
-    ]);
-
-    let (mut rx, child) = sidecar
-        .spawn()
-        .map_err(|err| format!("spawn adapter sidecar: {err}"))?;
-
-    // 用一个 async task 把 sidecar 的 stdout/stderr 转发出来。它退出时
-    // 整个 task 也会自然结束。
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(line) => {
-                    let line = String::from_utf8_lossy(&line);
-                    println!("[claude-adapters] {}", line.trim_end());
-                }
-                CommandEvent::Stderr(line) => {
-                    let line = String::from_utf8_lossy(&line);
-                    eprintln!("[claude-adapters] {}", line.trim_end());
-                }
-                CommandEvent::Terminated(payload) => {
-                    // exit code != 0 是常态：用户没配凭据时 sidecar 内部会
-                    // warn + skip + process.exit(1)。这里只 info 一行，
-                    // 不要当错误冒泡。
-                    println!(
-                        "[claude-adapters] sidecar exited (code={:?}, signal={:?})",
-                        payload.code, payload.signal
-                    );
-                }
-                _ => {}
-            }
+    let mut children = Vec::new();
+    for (label, flag) in [
+        ("feishu", "--feishu"),
+        ("telegram", "--telegram"),
+        ("wechat", "--wechat"),
+        ("dingtalk", "--dingtalk"),
+    ] {
+        let mut sidecar = app
+            .shell()
+            .sidecar("claude-sidecar")
+            .map_err(|err| format!("resolve {label} adapter sidecar: {err}"))?;
+        for (key, value) in terminal_environment(&default_shell()) {
+            sidecar = sidecar.env(key, value);
         }
-    });
+        let sidecar = sidecar.env("ADAPTER_SERVER_URL", &server_ws_url).args([
+            "adapters",
+            "--app-root",
+            &app_root_arg,
+            flag,
+        ]);
 
-    Ok(child)
+        let (mut rx, child) = sidecar
+            .spawn()
+            .map_err(|err| format!("spawn {label} adapter sidecar: {err}"))?;
+        let label = label.to_string();
+
+        // 用一个 async task 把 sidecar 的 stdout/stderr 转发出来。它退出时
+        // 整个 task 也会自然结束。
+        tauri::async_runtime::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    CommandEvent::Stdout(line) => {
+                        let line = String::from_utf8_lossy(&line);
+                        println!("[claude-adapters:{label}] {}", line.trim_end());
+                    }
+                    CommandEvent::Stderr(line) => {
+                        let line = String::from_utf8_lossy(&line);
+                        eprintln!("[claude-adapters:{label}] {}", line.trim_end());
+                    }
+                    CommandEvent::Terminated(payload) => {
+                        // exit code != 0 是常态：用户没配凭据时 sidecar 内部会
+                        // warn + skip + process.exit(1)。这里只 info 一行，
+                        // 不要当错误冒泡。
+                        println!(
+                            "[claude-adapters:{label}] sidecar exited (code={:?}, signal={:?})",
+                            payload.code, payload.signal
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        children.push(child);
+    }
+
+    Ok(children)
 }
 
-/// spawn adapter sidecar 并把 child handle 存进 AdapterState。
+/// spawn adapter sidecars 并把 child handles 存进 AdapterState。
 /// 在启动 + 重启路径里复用，集中处理"无法 spawn"的日志。
 fn spawn_and_track_adapters_sidecar(app: &AppHandle) {
-    match start_adapters_sidecar(app) {
-        Ok(child) => {
+    match start_adapters_sidecars(app) {
+        Ok(children) => {
             if let Some(state) = app.try_state::<AdapterState>() {
                 if let Ok(mut guard) = state.0.lock() {
-                    *guard = Some(child);
+                    *guard = children;
                 }
             }
         }
@@ -1062,8 +1407,41 @@ fn stop_adapters_sidecar(app: &AppHandle) {
     let Ok(mut guard) = state.0.lock() else {
         return;
     };
-    if let Some(child) = guard.take() {
+    for child in guard.drain(..) {
         let _ = child.kill();
+    }
+}
+
+#[cfg(unix)]
+fn kill_stale_unix_adapter_sidecars() {
+    let current_pid = std::process::id();
+    let Ok(output) = StdCommand::new("ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+    else {
+        return;
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let mut parts = line.trim_start().splitn(2, char::is_whitespace);
+        let Some(pid_text) = parts.next() else {
+            continue;
+        };
+        let Some(command) = parts.next() else {
+            continue;
+        };
+        let Ok(pid) = pid_text.parse::<u32>() else {
+            continue;
+        };
+        if pid == current_pid {
+            continue;
+        }
+        if !command.contains("claude-sidecar") || !command.contains(" adapters") {
+            continue;
+        }
+
+        let _ = StdCommand::new("kill").arg(pid.to_string()).status();
     }
 }
 
@@ -1084,8 +1462,70 @@ fn kill_windows_sidecars() {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_terminal_output, default_utf8_locale, ensure_utf8_locale, parse_env_block};
+    use super::{
+        decode_terminal_output, default_utf8_locale, ensure_utf8_locale,
+        has_meaningful_intersection, is_persistable_window_state, parse_env_block,
+        StoredWindowState,
+    };
     use std::collections::HashMap;
+
+    #[test]
+    fn window_state_rejects_too_small_sizes() {
+        let valid = StoredWindowState {
+            x: 100,
+            y: 100,
+            width: 1200,
+            height: 800,
+            maximized: false,
+        };
+        let too_narrow = StoredWindowState {
+            width: 959,
+            ..valid.clone()
+        };
+        let too_short = StoredWindowState {
+            height: 639,
+            ..valid.clone()
+        };
+
+        assert!(is_persistable_window_state(&valid));
+        assert!(!is_persistable_window_state(&too_narrow));
+        assert!(!is_persistable_window_state(&too_short));
+    }
+
+    #[test]
+    fn window_state_requires_visible_monitor_intersection() {
+        let state = StoredWindowState {
+            x: 100,
+            y: 100,
+            width: 1200,
+            height: 800,
+            maximized: false,
+        };
+
+        assert!(has_meaningful_intersection(&state, 0, 0, 1920, 1080));
+        assert!(!has_meaningful_intersection(
+            &StoredWindowState {
+                x: -1200,
+                y: 100,
+                ..state.clone()
+            },
+            0,
+            0,
+            1920,
+            1080,
+        ));
+        assert!(!has_meaningful_intersection(
+            &StoredWindowState {
+                x: 1900,
+                y: 100,
+                ..state
+            },
+            0,
+            0,
+            1920,
+            1080,
+        ));
+    }
 
     #[test]
     fn terminal_output_decoder_preserves_split_chinese_characters() {
@@ -1175,6 +1615,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_server_url,
@@ -1185,7 +1626,10 @@ pub fn run() {
             terminal_spawn,
             terminal_write,
             terminal_resize,
-            terminal_kill
+            terminal_kill,
+            macos_notification_permission_state,
+            macos_request_notification_permission,
+            macos_send_notification
         ]);
 
     // macOS: native menu bar (traffic-light overlay style)
@@ -1250,6 +1694,7 @@ pub fn run() {
     let app = builder
         .setup(|app| {
             setup_system_tray(app)?;
+            restore_main_window_state(&app.handle());
 
             let state = app.state::<ServerState>();
             let mut guard = state
@@ -1287,9 +1732,17 @@ pub fn run() {
             ..
         } if should_hide_to_tray(app_handle, &label) => {
             api.prevent_close();
+            save_main_window_state(app_handle);
             if let Some(window) = app_handle.get_webview_window(&label) {
                 let _ = window.hide();
             }
+        }
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Moved(_) | WindowEvent::Resized(_),
+            ..
+        } if label == MAIN_WINDOW_LABEL => {
+            save_main_window_state(app_handle);
         }
         #[cfg(target_os = "macos")]
         RunEvent::Reopen {
@@ -1300,11 +1753,13 @@ pub fn run() {
         }
         RunEvent::ExitRequested { .. } => {
             mark_app_quitting(app_handle);
+            save_main_window_state(app_handle);
             stop_server_sidecar(app_handle);
             stop_adapters_sidecar(app_handle);
         }
         RunEvent::Exit => {
             mark_app_quitting(app_handle);
+            save_main_window_state(app_handle);
             stop_server_sidecar(app_handle);
             stop_adapters_sidecar(app_handle);
         }

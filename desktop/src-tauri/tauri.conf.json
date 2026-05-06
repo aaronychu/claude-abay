@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/nicegui/static/tauri-schema-v2.json",
   "productName": "Claude Code A+BAY",
-  "version": "0.1.11",
+  "version": "0.2.1",
   "identifier": "com.claude-code-abay.desktop",
   "build": {
     "frontendDist": "../dist",

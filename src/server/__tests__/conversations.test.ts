@@ -10,9 +10,27 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import { fileURLToPath } from 'node:url'
-import { ConversationService, conversationService } from '../services/conversationService.js'
+import { ConversationService, ConversationStartupError, conversationService } from '../services/conversationService.js'
 import { SessionService } from '../services/sessionService.js'
 import { ProviderService } from '../services/providerService.js'
+
+async function rmWithRetry(targetPath: string): Promise<void> {
+  const attempts = process.platform === 'win32' ? 5 : 1
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await fs.rm(targetPath, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (
+        attempt === attempts - 1 ||
+        !['EBUSY', 'EPERM', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code || '')
+      ) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)))
+    }
+  }
+}
 
 // ============================================================================
 // ConversationService unit tests
@@ -30,6 +48,21 @@ describe('ConversationService', () => {
     expect(svc.getActiveSessions()).toEqual([])
   })
 
+  it('should block startup after a session is deleted during prewarm', async () => {
+    const svc = new ConversationService()
+    const sid = crypto.randomUUID()
+
+    svc.markSessionDeleted(sid)
+
+    try {
+      await svc.startSession(sid, process.cwd(), 'ws://127.0.0.1:1/sdk/test')
+      throw new Error('expected startSession to reject')
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConversationStartupError)
+      expect((error as ConversationStartupError).code).toBe('SESSION_DELETED')
+    }
+  })
+
   it('should return false when sending message to non-existent session', async () => {
     const svc = new ConversationService()
     const result = await svc.sendMessage('no-such-session', 'hello')
@@ -40,6 +73,60 @@ describe('ConversationService', () => {
     const svc = new ConversationService()
     const result = svc.respondToPermission('no-such-session', 'req-1', true)
     expect(result).toBe(false)
+  })
+
+  it('should not queue control requests before the SDK socket connects', async () => {
+    const svc = new ConversationService()
+    const sid = crypto.randomUUID()
+    const sent: unknown[] = []
+    const session: any = {
+      proc: { kill() {}, exited: Promise.resolve(0) },
+      outputCallbacks: [],
+      workDir: process.cwd(),
+      permissionMode: 'default',
+      sdkToken: 'token',
+      sdkSocket: null,
+      pendingOutbound: [],
+      startupPending: false,
+      startupExitCode: null,
+      stdoutLines: [],
+      stderrLines: [],
+      outputDrain: Promise.resolve(),
+      sdkMessages: [],
+      initMessage: null,
+      pendingPermissionRequests: new Map(),
+    }
+    ;(svc as any).sessions.set(sid, session)
+
+    const request = svc.requestControl(sid, { subtype: 'get_context_usage' }, 1_000)
+    await new Promise((resolve) => setTimeout(resolve, 75))
+
+    expect(session.pendingOutbound).toHaveLength(0)
+    expect(sent).toHaveLength(0)
+
+    session.sdkSocket = {
+      send(data: string) {
+        sent.push(JSON.parse(data))
+      },
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    expect(session.pendingOutbound).toHaveLength(0)
+    expect(sent).toHaveLength(1)
+
+    const requestId = (sent[0] as any).request_id
+    for (const callback of [...session.outputCallbacks]) {
+      callback({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: requestId,
+          response: { ok: true },
+        },
+      })
+    }
+
+    await expect(request).resolves.toEqual({ ok: true })
   })
 
   it('should forward suggested permission updates for allow-for-session decisions', () => {
@@ -138,6 +225,22 @@ describe('ConversationService', () => {
     ])
   })
 
+  it('should pass disabled thinking to the CLI runtime args', () => {
+    const svc = new ConversationService()
+    expect((svc as any).getRuntimeArgs({
+      model: 'deepseek-v4-pro',
+      effort: 'medium',
+      thinking: 'disabled',
+    })).toEqual([
+      '--model',
+      'deepseek-v4-pro',
+      '--effort',
+      'medium',
+      '--thinking',
+      'disabled',
+    ])
+  })
+
   it('should return false when sending interrupt to non-existent session', () => {
     const svc = new ConversationService()
     const result = svc.sendInterrupt('no-such-session')
@@ -154,7 +257,7 @@ describe('ConversationService', () => {
     expect(() => svc.onOutput('no-such-session', () => {})).not.toThrow()
   })
 
-  it('should ignore stale process exits after a session restarts', () => {
+  it('should ignore stale process exits after a session restarts', async () => {
     const svc = new ConversationService()
     const oldProc = { pid: 1 } as any
     const newProc = { pid: 2 } as any
@@ -172,10 +275,10 @@ describe('ConversationService', () => {
       pendingPermissionRequests: new Map(),
     })
 
-    ;(svc as any).handleProcessExit('session-restart', oldProc, 143)
+    await (svc as any).handleProcessExit('session-restart', oldProc, 143)
     expect(svc.hasSession('session-restart')).toBe(true)
 
-    ;(svc as any).handleProcessExit('session-restart', newProc, 0)
+    await (svc as any).handleProcessExit('session-restart', newProc, 0)
     expect(svc.hasSession('session-restart')).toBe(false)
   })
 
@@ -221,9 +324,11 @@ describe('ConversationService', () => {
 
   it('should reconstruct usage and metadata from a persisted transcript', async () => {
     const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY
     const tmpConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-transcript-'))
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-workdir-'))
     process.env.CLAUDE_CONFIG_DIR = tmpConfigDir
+    process.env.ANTHROPIC_API_KEY = 'test-key'
 
     try {
       const svc = new SessionService()
@@ -274,6 +379,11 @@ describe('ConversationService', () => {
       } else {
         process.env.CLAUDE_CONFIG_DIR = previousConfigDir
       }
+      if (previousAnthropicApiKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY
+      } else {
+        process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey
+      }
       await fs.rm(tmpConfigDir, { recursive: true, force: true })
       await fs.rm(workDir, { recursive: true, force: true })
     }
@@ -316,8 +426,9 @@ describe('ConversationService', () => {
       expect(usage?.models[0]?.model).toBe('claude-sonnet-4-6')
       expect(usage?.models[0]?.contextWindow).toBe(200_000)
       expect(contextEstimate?.model).toBe('claude-sonnet-4-6')
-      expect(contextEstimate?.totalTokens).toBe(100)
+      expect(contextEstimate?.totalTokens).toBe(120)
       expect(contextEstimate?.rawMaxTokens).toBe(200_000)
+      expect(contextEstimate?.categories.some((category) => category.name === 'Output tokens' && category.tokens === 20)).toBe(true)
     } finally {
       if (previousConfigDir === undefined) {
         delete process.env.CLAUDE_CONFIG_DIR
@@ -368,6 +479,29 @@ describe('WebSocket Chat Integration', () => {
     }
   }
 
+  async function withMockInitDelay<T>(
+    delayMs: number | undefined,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const previousDelay = process.env.MOCK_SDK_INIT_DELAY_MS
+
+    if (delayMs && delayMs > 0) {
+      process.env.MOCK_SDK_INIT_DELAY_MS = String(delayMs)
+    } else {
+      delete process.env.MOCK_SDK_INIT_DELAY_MS
+    }
+
+    try {
+      return await callback()
+    } finally {
+      if (previousDelay === undefined) {
+        delete process.env.MOCK_SDK_INIT_DELAY_MS
+      } else {
+        process.env.MOCK_SDK_INIT_DELAY_MS = previousDelay
+      }
+    }
+  }
+
   async function withMockStreamDelay<T>(
     delayMs: number | undefined,
     callback: () => Promise<T>,
@@ -391,6 +525,29 @@ describe('WebSocket Chat Integration', () => {
     }
   }
 
+  async function withMockMcpStatusDelay<T>(
+    delayMs: number | undefined,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const previousDelay = process.env.MOCK_SDK_MCP_STATUS_DELAY_MS
+
+    if (delayMs && delayMs > 0) {
+      process.env.MOCK_SDK_MCP_STATUS_DELAY_MS = String(delayMs)
+    } else {
+      delete process.env.MOCK_SDK_MCP_STATUS_DELAY_MS
+    }
+
+    try {
+      return await callback()
+    } finally {
+      if (previousDelay === undefined) {
+        delete process.env.MOCK_SDK_MCP_STATUS_DELAY_MS
+      } else {
+        process.env.MOCK_SDK_MCP_STATUS_DELAY_MS = previousDelay
+      }
+    }
+  }
+
   async function withMockExitAfterFirstUser<T>(
     delayMs: number | undefined,
     callback: () => Promise<T>,
@@ -410,6 +567,34 @@ describe('WebSocket Chat Integration', () => {
         delete process.env.MOCK_SDK_EXIT_AFTER_FIRST_USER_MS
       } else {
         process.env.MOCK_SDK_EXIT_AFTER_FIRST_USER_MS = previousDelay
+      }
+    }
+  }
+
+  async function withMockStartupStdoutExit<T>(
+    stdout: string,
+    exitDelayMs: number,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const previousStdout = process.env.MOCK_SDK_STARTUP_STDOUT
+    const previousExitDelay = process.env.MOCK_SDK_EXIT_BEFORE_SDK_MS
+
+    process.env.MOCK_SDK_STARTUP_STDOUT = stdout
+    process.env.MOCK_SDK_EXIT_BEFORE_SDK_MS = String(exitDelayMs)
+
+    try {
+      return await callback()
+    } finally {
+      if (previousStdout === undefined) {
+        delete process.env.MOCK_SDK_STARTUP_STDOUT
+      } else {
+        process.env.MOCK_SDK_STARTUP_STDOUT = previousStdout
+      }
+
+      if (previousExitDelay === undefined) {
+        delete process.env.MOCK_SDK_EXIT_BEFORE_SDK_MS
+      } else {
+        process.env.MOCK_SDK_EXIT_BEFORE_SDK_MS = previousExitDelay
       }
     }
   }
@@ -632,6 +817,41 @@ describe('WebSocket Chat Integration', () => {
     expect(statusMsgs[0].state).toBe('thinking')
   })
 
+  it('should start desktop sessions with disabled thinking when configured', async () => {
+    const sessionId = `chat-thinking-disabled-${crypto.randomUUID()}`
+    const originalStartSession = conversationService.startSession.bind(conversationService)
+    const startOptions: Array<{ thinking?: string; model?: string }> = []
+
+    conversationService.startSession = (async function patchedStartSession(
+      sid: string,
+      workDir: string,
+      sdkUrl: string,
+      options?: { permissionMode?: string; model?: string; effort?: string; thinking?: 'enabled' | 'adaptive' | 'disabled'; providerId?: string | null },
+    ) {
+      if (sid === sessionId) {
+        startOptions.push({ thinking: options?.thinking, model: options?.model })
+      }
+      return originalStartSession(sid, workDir, sdkUrl, options)
+    }) as typeof conversationService.startSession
+
+    try {
+      await fs.writeFile(
+        path.join(tmpDir, 'settings.json'),
+        JSON.stringify({ alwaysThinkingEnabled: false }, null, 2),
+        'utf-8',
+      )
+
+      const messages = await runTurn(sessionId, 'Hello without thinking')
+
+      expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
+      expect(startOptions).toEqual([{ thinking: 'disabled', model: undefined }])
+    } finally {
+      conversationService.startSession = originalStartSession as typeof conversationService.startSession
+      conversationService.stopSession(sessionId)
+      await fs.writeFile(path.join(tmpDir, 'settings.json'), '{}\n', 'utf-8')
+    }
+  })
+
   it('should continue chat when SDK init arrives only after the first user turn', async () => {
     const messages = await withMockInitMode('on_first_user', () =>
       runTurn('chat-test-lazy-init', 'Hello after lazy init'),
@@ -700,6 +920,82 @@ describe('WebSocket Chat Integration', () => {
     expect(basicBody.context).toBeUndefined()
   })
 
+  it('should expose context-only inspection without waiting on mcp status', async () => {
+    await withMockMcpStatusDelay(2_000, async () => {
+      const sessionId = `chat-context-only-${crypto.randomUUID()}`
+      await runTurn(sessionId, 'hello before context-only inspection')
+
+      const startedAt = performance.now()
+      const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=1&contextOnly=1`)
+      const elapsedMs = performance.now() - startedAt
+      expect(res.status).toBe(200)
+      const body = await res.json() as any
+
+      expect(body.context.model).toBe('mock-opus')
+      expect(body.context.estimateOnly).toBe(true)
+      expect(body.usage).toBeUndefined()
+      expect(elapsedMs).toBeLessThan(1_500)
+    })
+  })
+
+  it('should return initial context for a prewarmed empty session on the first inspection request', async () => {
+    await withMockInitDelay(500, async () => {
+      const createRes = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workDir: process.cwd() }),
+      })
+      expect(createRes.status).toBe(201)
+      const { sessionId } = await createRes.json() as { sessionId: string }
+      const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            ws.close()
+            reject(new Error(`Timed out waiting for prewarm connection for ${sessionId}`))
+          }, 5_000)
+
+          ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data as string)
+            if (msg.type === 'connected') {
+              clearTimeout(timeout)
+              ws.send(JSON.stringify({ type: 'prewarm_session' }))
+              resolve()
+            }
+          }
+
+          ws.onerror = () => {
+            clearTimeout(timeout)
+            ws.close()
+            reject(new Error(`WebSocket error for prewarm context session ${sessionId}`))
+          }
+        })
+
+        await waitUntil(
+          () => conversationService.hasSession(sessionId),
+          `prewarmed CLI process for ${sessionId}`,
+        )
+
+        const startedAt = performance.now()
+        const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/inspection?includeContext=1&contextOnly=1`)
+        const elapsedMs = performance.now() - startedAt
+        expect(res.status).toBe(200)
+        const body = await res.json() as any
+
+        expect(body.context.model).toBe('mock-opus')
+        expect(body.context.totalTokens).toBeGreaterThan(0)
+        expect(body.context.percentage).toBe(13)
+        expect(body.context.categories.some((category: any) => category.name === 'System prompt')).toBe(true)
+        expect(body.errors).toEqual({})
+        expect(elapsedMs).toBeLessThan(2_000)
+      } finally {
+        ws.close()
+        conversationService.stopSession(sessionId)
+      }
+    })
+  }, 10_000)
+
   it('should complete the client turn when the CLI exits after startup', async () => {
     const messages = await withMockExitAfterFirstUser(50, () =>
       runTurnUntilComplete(`chat-late-exit-${crypto.randomUUID()}`, 'trigger late exit'),
@@ -714,6 +1010,38 @@ describe('WebSocket Chat Integration', () => {
           m.message.includes('CLI process exited unexpectedly'),
       ),
     ).toBe(true)
+    expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
+    expect(messages.at(-1)?.type).toBe('message_complete')
+  }, 15_000)
+
+  it('should not duplicate SDK API errors with the final error result', async () => {
+    const messages = await runTurnUntilComplete(
+      `chat-api-error-${crypto.randomUUID()}`,
+      'trigger api error',
+    )
+
+    const errors = messages.filter((m) => m.type === 'error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({
+      code: 'invalid_request',
+      message: 'Prompt is too long',
+    })
+    expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
+    expect(messages.at(-1)?.type).toBe('message_complete')
+  }, 15_000)
+
+  it('should not add a CLI exit error after a reported SDK API error', async () => {
+    const messages = await runTurnUntilComplete(
+      `chat-api-error-exit-${crypto.randomUUID()}`,
+      'trigger api error then exit',
+    )
+
+    const errors = messages.filter((m) => m.type === 'error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({
+      code: 'invalid_request',
+      message: 'Prompt is too long',
+    })
     expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
     expect(messages.at(-1)?.type).toBe('message_complete')
   }, 15_000)
@@ -806,6 +1134,50 @@ describe('WebSocket Chat Integration', () => {
     expect(secondTurn.some((m) => m.type === 'error')).toBe(false)
   })
 
+  it('should keep a long desktop session alive in a /tmp project across engineering turns', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-abay-issue247-project-'))
+    let sessionId: string | undefined
+
+    try {
+      await fs.writeFile(
+        path.join(projectDir, 'package.json'),
+        JSON.stringify({ name: 'issue-247-repro', type: 'module' }, null, 2),
+      )
+      await fs.mkdir(path.join(projectDir, 'src'), { recursive: true })
+      await fs.writeFile(
+        path.join(projectDir, 'src', 'index.ts'),
+        'export function greet(name: string) { return `hello ${name}` }\n',
+      )
+
+      const createRes = await fetch(`${baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workDir: projectDir }),
+      })
+      expect(createRes.status).toBe(201)
+      ;({ sessionId } = await createRes.json() as { sessionId: string })
+
+      const prompts = [
+        'Inspect this TypeScript project and summarize what you see.',
+        'Plan a small change to add a farewell helper.',
+        'Implement the helper in src/index.ts.',
+        'Review whether the exported functions are easy to test.',
+        'Suggest the next regression test for this project.',
+      ]
+
+      for (const prompt of prompts) {
+        const messages = await runTurn(sessionId, prompt)
+        expect(messages.some((m) => m.type === 'error')).toBe(false)
+        expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
+      }
+    } finally {
+      if (sessionId) {
+        await conversationService.stopSession(sessionId)
+      }
+      await rmWithRetry(projectDir)
+    }
+  }, 20_000)
+
   it('should clear a desktop session without sending /clear to the CLI turn loop', async () => {
     const createRes = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
@@ -859,6 +1231,52 @@ describe('WebSocket Chat Integration', () => {
     expect(nextTurn.some((m) => m.type === 'message_complete')).toBe(true)
   })
 
+  it('should include desktop service diagnostics when CLI startup fails', async () => {
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-startup-missing-workdir-'))
+    const canonicalWorkDir = await fs.realpath(workDir)
+    const createRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workDir }),
+    })
+    expect(createRes.status).toBe(201)
+    const { sessionId } = await createRes.json() as { sessionId: string }
+
+    await fs.rm(workDir, { recursive: true, force: true })
+
+    const messages = await runTurn(sessionId, 'trigger startup diagnostics', true)
+    const error = messages.find((msg) => msg.type === 'error')
+
+    expect(error).toMatchObject({
+      code: 'WORKDIR_INVALID',
+    })
+    expect(error?.message).toContain('Desktop service diagnostics:')
+    expect(error?.message).toContain(`sessionId: ${sessionId}`)
+    expect(error?.message).toContain(`workDir: ${canonicalWorkDir}`)
+    expect(error?.message).toContain('runtimeOverride: (none)')
+    expect(error?.message).toContain('activeProviderId:')
+    expect(error?.message).toContain('configuredProviders:')
+  })
+
+  it('should include CLI stdout diagnostics when startup exits before SDK messages', async () => {
+    const sessionId = `chat-startup-stdout-${crypto.randomUUID()}`
+
+    const messages = await withMockStartupStdoutExit(
+      'provider rejected request: invalid model id',
+      25,
+      () => runTurn(sessionId, 'trigger startup stdout diagnostics', true),
+    )
+    const error = messages.find((msg) => msg.type === 'error')
+
+    expect(error).toMatchObject({
+      code: 'CLI_START_FAILED',
+    })
+    expect(error?.message).toContain(
+      'CLI exited during startup (code 1): provider rejected request: invalid model id',
+    )
+    expect(error?.message).toContain('Desktop service diagnostics:')
+  }, 10_000)
+
   it('should prewarm the CLI before the first user turn and reuse that process', async () => {
     const createRes = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
@@ -875,7 +1293,7 @@ describe('WebSocket Chat Integration', () => {
       sid: string,
       workDir: string,
       sdkUrl: string,
-      options?: { permissionMode?: string; model?: string; effort?: string; providerId?: string | null },
+      options?: { permissionMode?: string; model?: string; effort?: string; thinking?: 'enabled' | 'adaptive' | 'disabled'; providerId?: string | null },
     ) {
       startCalls.push({ sessionId: sid })
       return originalStartSession(sid, workDir, sdkUrl, options)
@@ -1011,7 +1429,7 @@ describe('WebSocket Chat Integration', () => {
       sid: string,
       workDir: string,
       sdkUrl: string,
-      options?: { permissionMode?: string; model?: string; effort?: string; providerId?: string | null },
+      options?: { permissionMode?: string; model?: string; effort?: string; thinking?: 'enabled' | 'adaptive' | 'disabled'; providerId?: string | null },
     ) {
       startCalls.push({ sessionId: sid, options })
       return originalStartSession(sid, workDir, sdkUrl, options)
@@ -1076,7 +1494,7 @@ describe('WebSocket Chat Integration', () => {
       sid: string,
       workDir: string,
       sdkUrl: string,
-      options?: { permissionMode?: string; model?: string; effort?: string; providerId?: string | null },
+      options?: { permissionMode?: string; model?: string; effort?: string; thinking?: 'enabled' | 'adaptive' | 'disabled'; providerId?: string | null },
     ) {
       startCalls.push({ sessionId: sid, options })
       if (startCalls.length === 1) {
@@ -1140,6 +1558,108 @@ describe('WebSocket Chat Integration', () => {
       ws.close()
       conversationService.startSession = originalStartSession
       conversationService.stopSession(sessionId)
+    }
+  }, 20_000)
+
+  it('should ignore stale persisted runtime provider ids when resuming old sessions', async () => {
+    const providerService = new ProviderService()
+    const activeProvider = await providerService.addProvider({
+      presetId: 'custom',
+      name: 'Current Valid Provider',
+      apiKey: 'key-current-valid',
+      baseUrl: 'http://127.0.0.1:1/anthropic',
+      apiFormat: 'anthropic',
+      models: {
+        main: 'current-main',
+        haiku: 'current-haiku',
+        sonnet: 'current-sonnet',
+        opus: 'current-opus',
+      },
+    })
+    await providerService.activateProvider(activeProvider.id)
+
+    const createRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workDir: process.cwd() }),
+    })
+    expect(createRes.status).toBe(201)
+    const { sessionId } = await createRes.json() as { sessionId: string }
+
+    const staleProviderId = crypto.randomUUID()
+    const originalStartSession = conversationService.startSession.bind(conversationService)
+    const startCalls: Array<{
+      sessionId: string
+      options: { permissionMode?: string; model?: string; effort?: string; providerId?: string | null } | undefined
+    }> = []
+
+    conversationService.startSession = (async function patchedStartSession(
+      sid: string,
+      workDir: string,
+      sdkUrl: string,
+      options?: { permissionMode?: string; model?: string; effort?: string; thinking?: 'enabled' | 'adaptive' | 'disabled'; providerId?: string | null },
+    ) {
+      startCalls.push({ sessionId: sid, options })
+      return originalStartSession(sid, workDir, sdkUrl, options)
+    }) as typeof conversationService.startSession
+
+    const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
+    const messages: any[] = []
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          ws.close()
+          reject(new Error(`Timed out waiting for stale runtime resume for session ${sessionId}`))
+        }, 10_000)
+
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(event.data as string)
+          messages.push(msg)
+
+          if (msg.type === 'connected') {
+            ws.send(JSON.stringify({
+              type: 'set_runtime_config',
+              providerId: staleProviderId,
+              modelId: 'stale-model',
+            }))
+            ws.send(JSON.stringify({ type: 'user_message', content: 'resume old session' }))
+            return
+          }
+
+          if (msg.type === 'error') {
+            clearTimeout(timeout)
+            ws.close()
+            reject(new Error(msg.message))
+            return
+          }
+
+          if (msg.type === 'message_complete') {
+            clearTimeout(timeout)
+            ws.close()
+            resolve()
+          }
+        }
+
+        ws.onerror = () => {
+          clearTimeout(timeout)
+          reject(new Error(`WebSocket error for stale runtime resume session ${sessionId}`))
+        }
+      })
+
+      expect(startCalls).toHaveLength(1)
+      expect(startCalls[0]).toMatchObject({
+        sessionId,
+        options: {
+          providerId: activeProvider.id,
+        },
+      })
+      expect(startCalls[0]?.options?.model).not.toBe('stale-model')
+      expect(messages.some((msg) => msg.type === 'message_complete')).toBe(true)
+    } finally {
+      ws.close()
+      conversationService.startSession = originalStartSession
+      conversationService.stopSession(sessionId)
+      await providerService.activateOfficial()
     }
   }, 20_000)
 
@@ -1258,7 +1778,7 @@ describe('WebSocket Chat Integration', () => {
       sid: string,
       workDir: string,
       sdkUrl: string,
-      options?: { permissionMode?: string; model?: string; effort?: string; providerId?: string | null },
+      options?: { permissionMode?: string; model?: string; effort?: string; thinking?: 'enabled' | 'adaptive' | 'disabled'; providerId?: string | null },
     ) {
       startCalls.push({ sessionId: sid, options })
       return originalStartSession(sid, workDir, sdkUrl, options)
@@ -1404,7 +1924,7 @@ describe('WebSocket Chat Integration', () => {
       sid: string,
       workDir: string,
       sdkUrl: string,
-      options?: { permissionMode?: string; model?: string; effort?: string; providerId?: string | null },
+      options?: { permissionMode?: string; model?: string; effort?: string; thinking?: 'enabled' | 'adaptive' | 'disabled'; providerId?: string | null },
     ) {
       startCalls.push({ sessionId: sid, options })
       return originalStartSession(sid, workDir, sdkUrl, options)

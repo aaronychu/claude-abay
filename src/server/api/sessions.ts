@@ -7,6 +7,8 @@
  *   GET    /api/sessions            — 列出会话
  *   GET    /api/sessions/:id        — 获取会话详情
  *   GET    /api/sessions/:id/messages — 获取会话消息
+ *   GET    /api/sessions/:id/turn-checkpoints — 获取按轮次保留的 checkpoint 预览
+ *   GET    /api/sessions/:id/turn-checkpoints/diff — 获取绑定到指定 checkpoint 的 diff
  *   POST   /api/sessions            — 创建新会话
  *   DELETE /api/sessions/:id        — 删除会话
  *   PATCH  /api/sessions/:id        — 重命名会话
@@ -18,11 +20,23 @@ import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { getSlashCommands } from '../ws/handler.js'
 import { getCommandName } from '../../commands.js'
 import { getSkillDirCommands } from '../../skills/loadSkillsDir.js'
+import { WorkspaceService } from '../services/workspaceService.js'
 import {
   executeSessionRewind,
+  getSessionTurnCheckpointDiff,
+  listSessionTurnCheckpoints,
   previewSessionRewind,
   type RewindTargetSelector,
 } from '../services/sessionRewindService.js'
+
+const workspaceService = new WorkspaceService(
+  async (sessionId) => (
+    conversationService.getSessionWorkDir(sessionId) ||
+    await sessionService.getSessionWorkDir(sessionId)
+  ),
+  async (sessionId) => sessionService.getSessionMessages(sessionId),
+  async (sessionId) => sessionService.getSessionFileHistorySnapshots(sessionId),
+)
 
 export async function handleSessionsApi(
   req: Request,
@@ -89,6 +103,18 @@ export async function handleSessionsApi(
       return await rewindSession(req, sessionId)
     }
 
+    if (subResource === 'turn-checkpoints') {
+      if (req.method !== 'GET') {
+        return Response.json(
+          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+          { status: 405 }
+        )
+      }
+      return segments[4] === 'diff'
+        ? await getTurnCheckpointDiff(sessionId, url)
+        : await getTurnCheckpoints(sessionId)
+    }
+
     if (subResource === 'slash-commands') {
       if (req.method !== 'GET') {
         return Response.json(
@@ -107,6 +133,16 @@ export async function handleSessionsApi(
         )
       }
       return await getSessionInspection(sessionId, url)
+    }
+
+    if (subResource === 'workspace') {
+      if (req.method !== 'GET') {
+        return Response.json(
+          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+          { status: 405 }
+        )
+      }
+      return await handleSessionWorkspaceRoute(sessionId, url, segments[4])
     }
 
     // Route to conversations handler if sub-resource is 'chat'
@@ -170,8 +206,41 @@ async function getSession(sessionId: string): Promise<Response> {
 }
 
 async function getSessionMessages(sessionId: string): Promise<Response> {
-  const messages = await sessionService.getSessionMessages(sessionId)
-  return Response.json({ messages })
+  const [messages, taskNotifications] = await Promise.all([
+    sessionService.getSessionMessages(sessionId),
+    sessionService.getSessionTaskNotifications(sessionId),
+  ])
+  return Response.json({ messages, taskNotifications })
+}
+
+async function handleSessionWorkspaceRoute(
+  sessionId: string,
+  url: URL,
+  workspaceResource?: string,
+): Promise<Response> {
+  await requireSessionWorkspace(sessionId)
+
+  switch (workspaceResource) {
+    case 'status':
+      return Response.json(await workspaceService.getStatus(sessionId))
+    case 'tree':
+      return await runWorkspaceRequest(() => workspaceService.readTree(
+        sessionId,
+        url.searchParams.get('path') || '',
+      ))
+    case 'file':
+      return await runWorkspaceRequest(() => workspaceService.readFile(
+        sessionId,
+        requireWorkspacePath(url, 'file'),
+      ))
+    case 'diff':
+      return await runWorkspaceDiffRequest(() => workspaceService.getDiff(
+        sessionId,
+        requireWorkspacePath(url, 'diff'),
+      ))
+    default:
+      throw ApiError.notFound(`Unknown workspace resource: ${workspaceResource || 'workspace'}`)
+  }
 }
 
 async function createSession(req: Request): Promise<Response> {
@@ -190,8 +259,69 @@ async function createSession(req: Request): Promise<Response> {
   return Response.json(result, { status: 201 })
 }
 
+async function requireSessionWorkspace(sessionId: string): Promise<string> {
+  const workDir =
+    conversationService.getSessionWorkDir(sessionId) ||
+    await sessionService.getSessionWorkDir(sessionId)
+
+  if (!workDir) {
+    throw ApiError.notFound(`Session not found: ${sessionId}`)
+  }
+
+  return workDir
+}
+
+function requireWorkspacePath(url: URL, route: 'file' | 'diff'): string {
+  const filePath = url.searchParams.get('path')
+  if (!filePath) {
+    throw ApiError.badRequest(`path query parameter is required for workspace ${route}`)
+  }
+  return filePath
+}
+
+async function runWorkspaceRequest<T>(operation: () => Promise<T>): Promise<Response> {
+  try {
+    return Response.json(await operation())
+  } catch (error) {
+    if (isOutsideWorkspaceError(error)) {
+      throw new ApiError(403, error.message, 'FORBIDDEN')
+    }
+    if (isSessionNotFoundError(error)) {
+      throw ApiError.notFound(error.message)
+    }
+    throw error
+  }
+}
+
+async function runWorkspaceDiffRequest<T extends { state?: string; error?: string }>(
+  operation: () => Promise<T>,
+): Promise<Response> {
+  const result = await runWorkspaceRequest(operation)
+  const body = await result.clone().json() as T
+
+  if (body.state === 'error' && typeof body.error === 'string' && body.error.includes('outside workspace')) {
+    throw new ApiError(403, body.error, 'FORBIDDEN')
+  }
+
+  return result
+}
+
+function isOutsideWorkspaceError(error: unknown): error is Error {
+  return error instanceof Error && error.message.includes('outside workspace')
+}
+
+function isSessionNotFoundError(error: unknown): error is Error {
+  return error instanceof Error && error.message.startsWith('Session not found:')
+}
+
 async function deleteSession(sessionId: string): Promise<Response> {
-  await sessionService.deleteSession(sessionId)
+  conversationService.markSessionDeleted(sessionId)
+  try {
+    await sessionService.deleteSession(sessionId)
+  } catch (error) {
+    conversationService.unmarkSessionDeleted(sessionId)
+    throw error
+  }
   return Response.json({ ok: true })
 }
 
@@ -219,6 +349,7 @@ async function getSessionSlashCommands(sessionId: string): Promise<Response> {
 
 async function getSessionInspection(sessionId: string, url: URL): Promise<Response> {
   const includeContext = url.searchParams.get('includeContext') !== '0'
+  const contextOnly = includeContext && url.searchParams.get('contextOnly') === '1'
   const workDir =
     conversationService.getSessionWorkDir(sessionId) ||
     await sessionService.getSessionWorkDir(sessionId)
@@ -281,46 +412,58 @@ async function getSessionInspection(sessionId: string, url: URL): Promise<Respon
     return Response.json(response)
   }
 
-  const basicControlTimeoutMs = includeContext ? 10_000 : 4_000
-  const [usageResult, contextResult, mcpResult] = await Promise.allSettled([
-    conversationService.requestControl(sessionId, { subtype: 'get_session_usage' }, basicControlTimeoutMs),
-    includeContext
-      ? conversationService.requestControl(
-          sessionId,
-          { subtype: 'get_context_usage', estimateOnly: true },
-          20_000,
-        )
-      : Promise.resolve(null),
-    conversationService.requestControl(sessionId, { subtype: 'mcp_status' }, basicControlTimeoutMs),
-  ])
-
   const errors: Record<string, string> = {}
-  if (usageResult.status === 'fulfilled') {
-    response.usage = chooseRicherUsage(
-      { ...usageResult.value, source: 'current_process' },
-      transcriptUsage,
-    )
-  } else {
-    if (transcriptUsage) {
-      response.usage = transcriptUsage
-    } else {
-      errors.usage = usageResult.reason instanceof Error ? usageResult.reason.message : String(usageResult.reason)
+  if (contextOnly) {
+    try {
+      response.context = await conversationService.requestControl(
+        sessionId,
+        { subtype: 'get_context_usage', estimateOnly: true },
+        20_000,
+      )
+    } catch (error) {
+      errors.context = error instanceof Error ? error.message : String(error)
     }
-  }
-
-  if (!includeContext) {
-    // Context can be expensive on large live sessions. The desktop UI loads it
-    // separately when the context tab is actually selected.
-  } else if (contextResult.status === 'fulfilled' && contextResult.value) {
-    response.context = contextResult.value
   } else {
-    errors.context = contextResult.reason instanceof Error ? contextResult.reason.message : String(contextResult.reason)
-  }
+    const basicControlTimeoutMs = includeContext ? 10_000 : 4_000
+    const [usageResult, contextResult, mcpResult] = await Promise.allSettled([
+      conversationService.requestControl(sessionId, { subtype: 'get_session_usage' }, basicControlTimeoutMs),
+      includeContext
+        ? conversationService.requestControl(
+            sessionId,
+            { subtype: 'get_context_usage', estimateOnly: true },
+            20_000,
+          )
+        : Promise.resolve(null),
+      conversationService.requestControl(sessionId, { subtype: 'mcp_status' }, basicControlTimeoutMs),
+    ])
 
-  if (mcpResult.status === 'fulfilled' && response.status && typeof response.status === 'object') {
-    response.status = {
-      ...response.status,
-      mcpServers: Array.isArray(mcpResult.value.mcpServers) ? mcpResult.value.mcpServers : (response.status as Record<string, unknown>).mcpServers,
+    if (usageResult.status === 'fulfilled') {
+      response.usage = chooseRicherUsage(
+        { ...usageResult.value, source: 'current_process' },
+        transcriptUsage,
+      )
+    } else {
+      if (transcriptUsage) {
+        response.usage = transcriptUsage
+      } else {
+        errors.usage = usageResult.reason instanceof Error ? usageResult.reason.message : String(usageResult.reason)
+      }
+    }
+
+    if (!includeContext) {
+      // Context can be expensive on large live sessions. The desktop UI loads it
+      // separately when the context tab is actually selected.
+    } else if (contextResult.status === 'fulfilled' && contextResult.value) {
+      response.context = contextResult.value
+    } else {
+      errors.context = contextResult.reason instanceof Error ? contextResult.reason.message : String(contextResult.reason)
+    }
+
+    if (mcpResult.status === 'fulfilled' && response.status && typeof response.status === 'object') {
+      response.status = {
+        ...response.status,
+        mcpServers: Array.isArray(mcpResult.value.mcpServers) ? mcpResult.value.mcpServers : (response.status as Record<string, unknown>).mcpServers,
+      }
     }
   }
 
@@ -428,6 +571,41 @@ async function rewindSession(req: Request, sessionId: string): Promise<Response>
   const result = body.dryRun
     ? await previewSessionRewind(sessionId, body)
     : await executeSessionRewind(sessionId, body)
+
+  return Response.json(result)
+}
+
+async function getTurnCheckpoints(sessionId: string): Promise<Response> {
+  const checkpoints = await listSessionTurnCheckpoints(sessionId)
+  return Response.json({ checkpoints })
+}
+
+async function getTurnCheckpointDiff(sessionId: string, url: URL): Promise<Response> {
+  const targetUserMessageId = url.searchParams.get('targetUserMessageId') || undefined
+  const userMessageIndexParam = url.searchParams.get('userMessageIndex')
+  const path = url.searchParams.get('path')
+  const userMessageIndex =
+    userMessageIndexParam === null ? undefined : Number.parseInt(userMessageIndexParam, 10)
+
+  if (
+    (typeof targetUserMessageId !== 'string' || targetUserMessageId.length === 0) &&
+    !Number.isInteger(userMessageIndex)
+  ) {
+    throw ApiError.badRequest('targetUserMessageId (string) or userMessageIndex (integer) is required')
+  }
+
+  if (!path) {
+    throw ApiError.badRequest('path query parameter is required for turn checkpoint diff')
+  }
+
+  const result = await getSessionTurnCheckpointDiff(
+    sessionId,
+    {
+      targetUserMessageId,
+      userMessageIndex,
+    },
+    path,
+  )
 
   return Response.json(result)
 }

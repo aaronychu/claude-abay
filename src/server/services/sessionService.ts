@@ -13,6 +13,7 @@ import { sanitizePath as sanitizePortablePath } from '../../utils/sessionStorage
 import type { FileHistorySnapshot } from '../../utils/fileHistory.js'
 import { calculateUSDCost, MODEL_COSTS } from '../../utils/modelCost.js'
 import {
+  calculateCurrentContextTokenTotal,
   MODEL_CONTEXT_WINDOW_DEFAULT,
   getContextWindowForModel,
   getModelMaxOutputTokens,
@@ -60,6 +61,14 @@ export type MessageEntry = {
   parentUuid?: string
   parentToolUseId?: string
   isSidechain?: boolean
+}
+
+export type SessionTaskNotification = {
+  taskId: string
+  toolUseId: string
+  status: 'completed' | 'failed' | 'stopped'
+  summary?: string
+  outputFile?: string
 }
 
 export type TranscriptUsageSnapshot = {
@@ -175,6 +184,8 @@ const USER_INTERRUPTION_TEXTS = new Set([
 ])
 
 const NO_RESPONSE_REQUESTED_TEXT = 'No response requested.'
+const TASK_NOTIFICATION_RE = /^<task-notification>\s*[\s\S]*<\/task-notification>$/i
+const TASK_NOTIFICATION_BLOCK_RE = /<task-notification>\s*[\s\S]*?<\/task-notification>/i
 
 // ============================================================================
 // Service
@@ -352,6 +363,72 @@ export class SessionService {
     )
   }
 
+  private isToolResultContent(content: unknown): boolean {
+    return (
+      Array.isArray(content) &&
+      content.some((block) =>
+        block &&
+        typeof block === 'object' &&
+        (block as Record<string, unknown>).type === 'tool_result'
+      )
+    )
+  }
+
+  private isTaskNotificationContent(content: unknown): boolean {
+    const textBlocks = this.extractTextBlocks(content)
+    return (
+      textBlocks.length > 0 &&
+      textBlocks.every((text) => this.extractTaskNotificationXml(text) !== null)
+    )
+  }
+
+  private extractTaskNotificationXml(text: string): string | null {
+    const trimmed = text.trim()
+    if (TASK_NOTIFICATION_RE.test(trimmed)) return trimmed
+    return trimmed.match(TASK_NOTIFICATION_BLOCK_RE)?.[0] ?? null
+  }
+
+  private decodeXmlText(text: string): string {
+    return text
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&')
+  }
+
+  private readXmlTag(xml: string, tag: string): string | undefined {
+    const match = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'))
+    return match?.[1] ? this.decodeXmlText(match[1].trim()) : undefined
+  }
+
+  private parseTaskNotificationContent(content: unknown): SessionTaskNotification | null {
+    const xml = this.extractTextBlocks(content)
+      .map((text) => this.extractTaskNotificationXml(text))
+      .find((value): value is string => value !== null)
+    if (!xml) return null
+
+    const toolUseId = this.readXmlTag(xml, 'tool-use-id')
+    const status = this.readXmlTag(xml, 'status')
+    if (
+      !toolUseId ||
+      (status !== 'completed' && status !== 'failed' && status !== 'stopped')
+    ) {
+      return null
+    }
+
+    const taskId = this.readXmlTag(xml, 'task-id') || toolUseId
+    const summary = this.readXmlTag(xml, 'summary')
+    const outputFile = this.readXmlTag(xml, 'output-file')
+    return {
+      taskId,
+      toolUseId,
+      status,
+      ...(summary ? { summary } : {}),
+      ...(outputFile ? { outputFile } : {}),
+    }
+  }
+
   private shouldHideTranscriptEntry(entry: RawEntry): boolean {
     const role = entry.message?.role
     const content = entry.message?.content
@@ -359,7 +436,8 @@ export class SessionService {
     if (role === 'user') {
       return (
         this.isInternalCommandBreadcrumb(content) ||
-        this.isSyntheticUserInterruption(content)
+        this.isSyntheticUserInterruption(content) ||
+        this.isTaskNotificationContent(content)
       )
     }
 
@@ -814,12 +892,19 @@ export class SessionService {
     if (!latest) return null
 
     const rawMaxTokens = this.getTranscriptContextWindow(latest.model)
-    const totalTokens = latest.inputTokens + latest.cacheReadInputTokens + latest.cacheCreationInputTokens
+    const promptTokens = latest.inputTokens + latest.cacheReadInputTokens + latest.cacheCreationInputTokens
+    const totalTokens = calculateCurrentContextTokenTotal(promptTokens, {
+      input_tokens: latest.inputTokens,
+      output_tokens: latest.outputTokens,
+      cache_read_input_tokens: latest.cacheReadInputTokens,
+      cache_creation_input_tokens: latest.cacheCreationInputTokens,
+    })
     const percentage = rawMaxTokens > 0 ? Math.round((totalTokens / rawMaxTokens) * 100) : 0
     const categories: TranscriptContextEstimate['categories'] = [
       { name: 'Input tokens', tokens: latest.inputTokens, color: '#8f3217' },
       { name: 'Cache read', tokens: latest.cacheReadInputTokens, color: '#0f5c8f' },
       { name: 'Cache write', tokens: latest.cacheCreationInputTokens, color: '#7c3aed' },
+      { name: 'Output tokens', tokens: latest.outputTokens, color: '#2f7d32' },
       { name: 'Free space', tokens: Math.max(0, rawMaxTokens - totalTokens), color: '#a1a1aa', isDeferred: true },
     ].filter((category) => category.tokens > 0)
 
@@ -991,13 +1076,27 @@ export class SessionService {
     offset?: number
   }): Promise<{ sessions: SessionListItem[]; total: number }> {
     const sessionFiles = await this.discoverSessionFiles(options?.project)
+    const filesWithStats = (await Promise.all(sessionFiles.map(async (sessionFile) => {
+      try {
+        return {
+          ...sessionFile,
+          stat: await fs.stat(sessionFile.filePath),
+        }
+      } catch {
+        return null
+      }
+    }))).filter((item): item is NonNullable<typeof item> => item !== null)
+
+    filesWithStats.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime())
+
+    const total = filesWithStats.length
+    const offset = options?.offset ?? 0
+    const limit = options?.limit ?? 50
+    const paginatedFiles = filesWithStats.slice(offset, offset + limit)
 
     // Build session list items with metadata from file stats & first entries
-    const items: SessionListItem[] = []
-
-    for (const { filePath, projectDir, sessionId } of sessionFiles) {
+    const items = (await Promise.all(paginatedFiles.map(async ({ filePath, projectDir, sessionId, stat }) => {
       try {
-        const stat = await fs.stat(filePath)
         const entries = await this.readJsonlFile(filePath)
         const workDir = this.resolveWorkDirFromEntries(entries, projectDir)
         const workDirExists = await this.pathExists(workDir)
@@ -1018,7 +1117,7 @@ export class SessionService {
           }
         }
 
-        items.push({
+        return {
           id: sessionId,
           title,
           createdAt,
@@ -1027,21 +1126,14 @@ export class SessionService {
           projectPath: projectDir,
           workDir,
           workDirExists,
-        })
+        }
       } catch {
         // Skip unreadable files
+        return null
       }
-    }
+    }))).filter((item): item is SessionListItem => item !== null)
 
-    // Sort by modifiedAt descending (most recent first)
-    items.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime())
-
-    const total = items.length
-    const offset = options?.offset ?? 0
-    const limit = options?.limit ?? 50
-    const paginated = items.slice(offset, offset + limit)
-
-    return { sessions: paginated, total }
+    return { sessions: items, total }
   }
 
   /**
@@ -1113,18 +1205,20 @@ export class SessionService {
     // expand relative paths — in bundled sidecar mode the server's cwd is
     // typically '/'. Callers (IM adapters) already send absolute realPath,
     // but we log here so cwd regressions are caught early.
-    const absWorkDir = path.resolve(resolvedWorkDir)
+    const resolvedPath = path.resolve(resolvedWorkDir)
+    let absWorkDir: string
+    try {
+      absWorkDir = await fs.realpath(resolvedPath)
+    } catch {
+      throw ApiError.badRequest(`Working directory does not exist: ${resolvedPath}`)
+    }
     console.log(
       `[SessionService] createSession: requested workDir=${JSON.stringify(
         workDir,
       )}, resolved=${absWorkDir} (process.cwd()=${process.cwd()})`,
     )
     let stat
-    try {
-      stat = await fs.stat(absWorkDir)
-    } catch {
-      throw ApiError.badRequest(`Working directory does not exist: ${absWorkDir}`)
-    }
+    stat = await fs.stat(absWorkDir)
     if (!stat.isDirectory()) {
       throw ApiError.badRequest(`Working directory is not a directory: ${absWorkDir}`)
     }
@@ -1212,6 +1306,20 @@ export class SessionService {
     })
   }
 
+  async getCustomTitle(sessionId: string): Promise<string | null> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) return null
+
+    const entries = await this.readJsonlFile(found.filePath)
+    let customTitle: string | null = null
+    for (const entry of entries) {
+      if (entry.type === 'custom-title' && typeof entry.customTitle === 'string' && entry.customTitle.trim()) {
+        customTitle = entry.customTitle
+      }
+    }
+    return customTitle
+  }
+
   /**
    * Get the actual working directory for a session.
    * First checks for stored session-meta entry, then falls back to desanitizePath.
@@ -1222,6 +1330,18 @@ export class SessionService {
 
     const entries = await this.readJsonlFile(found.filePath)
     return this.resolveWorkDirFromEntries(entries, found.projectDir)
+  }
+
+  async getSessionMessageCwd(
+    sessionId: string,
+    messageId: string,
+  ): Promise<string | null> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) return null
+
+    const entries = await this.readJsonlFile(found.filePath)
+    const entry = entries.find((candidate) => candidate.uuid === messageId)
+    return typeof entry?.cwd === 'string' && entry.cwd.trim() ? entry.cwd : null
   }
 
   /**
@@ -1268,7 +1388,8 @@ export class SessionService {
   async clearSessionTranscript(sessionId: string, fallbackWorkDir?: string): Promise<void> {
     let found = await this.findSessionFile(sessionId)
     if (!found && fallbackWorkDir) {
-      const absWorkDir = path.resolve(fallbackWorkDir)
+      const resolvedPath = path.resolve(fallbackWorkDir)
+      const absWorkDir = await fs.realpath(resolvedPath).catch(() => resolvedPath)
       const dirPath = path.join(this.getProjectsDir(), this.sanitizePath(absWorkDir))
       await fs.mkdir(dirPath, { recursive: true })
       found = {
@@ -1352,6 +1473,11 @@ export class SessionService {
     const removedMessageIds = activeMessages
       .slice(startIndex)
       .map((message) => message.id)
+    const remainingMessageIds = new Set(
+      activeMessages
+        .slice(0, startIndex)
+        .map((message) => message.id),
+    )
 
     if (removedMessageIds.length === 0) {
       return { removedCount: 0, removedMessageIds: [] }
@@ -1359,7 +1485,17 @@ export class SessionService {
 
     const removedIds = new Set(removedMessageIds)
     const filteredEntries = entries.filter(
-      (entry) => !(typeof entry.uuid === 'string' && removedIds.has(entry.uuid)),
+      (entry) => {
+        if (typeof entry.uuid !== 'string') return true
+        if (removedIds.has(entry.uuid)) return false
+        if (
+          entry.message?.role &&
+          (entry.type === 'user' || entry.type === 'assistant' || entry.type === 'system')
+        ) {
+          return remainingMessageIds.has(entry.uuid)
+        }
+        return true
+      },
     )
 
     const content =
@@ -1413,6 +1549,24 @@ export class SessionService {
     return [...snapshotsByMessageId.values()]
   }
 
+  async getSessionTaskNotifications(
+    sessionId: string,
+  ): Promise<SessionTaskNotification[]> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) {
+      throw ApiError.notFound(`Session not found: ${sessionId}`)
+    }
+
+    const entries = await this.readJsonlFile(found.filePath)
+    const notifications: SessionTaskNotification[] = []
+    for (const entry of entries) {
+      if (entry.message?.role !== 'user') continue
+      const notification = this.parseTaskNotificationContent(entry.message.content)
+      if (notification) notifications.push(notification)
+    }
+    return notifications
+  }
+
   // --------------------------------------------------------------------------
   // Private helpers
   // --------------------------------------------------------------------------
@@ -1421,6 +1575,7 @@ export class SessionService {
     const messages: MessageEntry[] = []
     const entriesByUuid = new Map<string, RawEntry>()
     const parentToolUseIdCache = new Map<string, string | undefined>()
+    let suppressTaskNotificationResponse = false
 
     for (const entry of entries) {
       if (typeof entry.uuid === 'string' && entry.uuid.length > 0) {
@@ -1434,6 +1589,23 @@ export class SessionService {
 
       // Skip meta entries (CLI internal bookkeeping)
       if (entry.isMeta) continue
+
+      const isTaskNotification =
+        entry.message.role === 'user' &&
+        this.isTaskNotificationContent(entry.message.content)
+      if (isTaskNotification) {
+        suppressTaskNotificationResponse = true
+        continue
+      }
+
+      if (
+        entry.message.role === 'user' &&
+        !this.isToolResultContent(entry.message.content)
+      ) {
+        suppressTaskNotificationResponse = false
+      } else if (suppressTaskNotificationResponse) {
+        continue
+      }
 
       if (this.shouldHideTranscriptEntry(entry)) continue
 
