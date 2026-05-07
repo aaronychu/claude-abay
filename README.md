@@ -145,7 +145,7 @@ export PATH="$HOME/path/to/claude-code-abay/bin:$PATH"
 #### 5.1 启动服务端
 
 ```bash
-cd /Users/nanmi/workspace/myself_code/claude-code-abay
+cd {path}/claude-code-abay
 SERVER_PORT=3456 bun run src/server/index.ts
 ```
 
@@ -158,7 +158,7 @@ curl http://127.0.0.1:3456/health
 #### 5.2 启动桌面前端
 
 ```bash
-cd /Users/nanmi/workspace/myself_code/claude-code-abay/desktop
+cd {path}/claude-code-abay/desktop
 bun run dev --host 127.0.0.1 --port 2024
 ```
 
