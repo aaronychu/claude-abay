@@ -10,6 +10,7 @@
     "beforeBuildCommand": "bun run build && bun run build:sidecars"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Claude Code A+BAY",

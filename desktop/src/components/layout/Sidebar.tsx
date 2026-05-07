@@ -128,7 +128,7 @@ export function Sidebar() {
   return (
     <aside
       onMouseDown={handleSidebarDrag}
-      className="sidebar-panel relative h-full flex flex-col bg-[var(--color-surface-sidebar)] border-r border-[var(--color-border)] select-none"
+      className="sidebar-panel relative h-full flex flex-col border-r border-[var(--color-border)] select-none"
       data-state={sidebarOpen ? 'open' : 'closed'}
       aria-label="Sidebar"
     >

@@ -31,7 +31,7 @@ const TASK_POLL_INTERVAL_MS = 1000
 const WORKSPACE_RESIZE_STEP = 32
 const TERMINAL_RESIZE_STEP = 24
 const CHAT_COLUMN_WITH_WORKSPACE_CLASS =
-  'min-w-[320px] flex-1 border-r border-[var(--color-border)] bg-[var(--color-surface)]'
+  'min-w-[320px] flex-1 bg-[var(--color-surface)]'
 
 function isSessionTabState(activeTabId: string | null, activeTabType: TabType | null | undefined) {
   if (!activeTabId) return false
@@ -284,7 +284,7 @@ export function ActiveSession() {
           className={`flex flex-col ${showWorkspacePanel ? CHAT_COLUMN_WITH_WORKSPACE_CLASS : 'min-w-[360px] flex-1'}`}
         >
           {isMemberSession && (
-            <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface-container)]">
+            <div className="shrink-0 bg-[var(--color-surface-container)]">
               <div className="mx-auto max-w-[860px] flex items-center justify-between gap-4 px-8 py-2">
                 <div className="min-w-0">
                   <div className="flex items-center gap-3">
@@ -359,8 +359,8 @@ export function ActiveSession() {
                 <div
                   className={
                     showWorkspacePanel
-                      ? 'flex w-full items-center border-b border-[var(--color-border)]/70 px-4 py-3'
-                      : 'mx-auto flex w-full max-w-[860px] items-center border-b border-outline-variant/10 px-8 py-3'
+                      ? 'flex w-full items-center px-4 py-3'
+                      : 'mx-auto flex w-full max-w-[860px] items-center px-8 py-3'
                   }
                 >
                   <div className="min-w-0 flex-1">
@@ -433,7 +433,7 @@ export function ActiveSession() {
           {showTerminalPanel && activeTabId ? (
             <div
               data-testid="session-terminal-panel"
-              className="flex shrink-0 flex-col border-t border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]"
+              className="flex shrink-0 flex-col bg-[var(--color-surface-container-lowest)]"
               style={{ height: terminalPanelHeight }}
             >
               <TerminalResizeHandle />

@@ -171,7 +171,7 @@ export function WorkspaceDiffSurface({
           })}
         </pre>
         {lines.length > lineLimit && (
-          <div className="sticky bottom-0 flex items-center gap-3 border-t border-[var(--color-border)] bg-[var(--color-surface-glass)] px-3 py-2 text-xs text-[var(--color-text-tertiary)] backdrop-blur">
+          <div className="sticky bottom-0 flex items-center gap-3 bg-[var(--color-surface-glass)] px-3 py-2 text-xs text-[var(--color-text-tertiary)] backdrop-blur">
             <span>
               {showAllLines
                 ? t('workspace.previewAllLines', { total: lines.length })

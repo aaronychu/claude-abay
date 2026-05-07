@@ -1696,6 +1696,20 @@ pub fn run() {
             setup_system_tray(app)?;
             restore_main_window_state(&app.handle());
 
+            // Force macOS vibrancy effect on the main window
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                    use tauri::window::{Effect, EffectState, EffectsBuilder};
+                    let _ = window.set_effects(
+                        EffectsBuilder::new()
+                            .effect(Effect::Sidebar)
+                            .state(EffectState::Active)
+                            .build(),
+                    );
+                }
+            }
+
             let state = app.state::<ServerState>();
             let mut guard = state
                 .0

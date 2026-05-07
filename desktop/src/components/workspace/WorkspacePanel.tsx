@@ -267,7 +267,7 @@ function WorkspaceFilterInput({
   const t = useTranslation()
 
   return (
-    <div className="shrink-0 border-b border-[var(--color-border)] px-3 py-2">
+    <div className="shrink-0 px-3 py-2">
       <label className="flex h-8 items-center gap-2 rounded-[9px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-2.5 text-[var(--color-text-tertiary)] transition-colors focus-within:border-[var(--color-border-focus)] focus-within:ring-2 focus-within:ring-[var(--color-brand)]/10">
         <span className="material-symbols-outlined shrink-0 text-[17px]">search</span>
         <input
@@ -342,8 +342,8 @@ function CodeSurface({
     return (
       <div className="grid grid-cols-[48px_minmax(0,720px)] gap-3 bg-[var(--color-brand)]/10 px-3 py-2">
         <span aria-hidden="true" />
-        <div className="rounded-[10px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] shadow-sm">
-          <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-3 py-2">
+        <div className="rounded-[10px] bg-[var(--color-surface-container-lowest)] shadow-sm">
+          <div className="flex items-center gap-2 px-3 py-2">
             <span className="material-symbols-outlined text-[15px] text-[var(--color-text-tertiary)]">chat_bubble</span>
             <span className="text-[12px] font-semibold text-[var(--color-text-primary)]">{t('workspace.localComment')}</span>
             <span className="ml-auto text-[11px] text-[var(--color-text-tertiary)]">
@@ -459,7 +459,7 @@ function CodeSurface({
           </Highlight>
         )}
         {lines.length > WORKSPACE_PREVIEW_LINE_LIMIT && (
-          <div className="sticky bottom-0 flex items-center gap-3 border-t border-[var(--color-border)] bg-[var(--color-surface-glass)] px-3 py-2 text-xs text-[var(--color-text-tertiary)] backdrop-blur">
+          <div className="sticky bottom-0 flex items-center gap-3 bg-[var(--color-surface-glass)] px-3 py-2 text-xs text-[var(--color-text-tertiary)] backdrop-blur">
             <span>
               {showAllLines
                 ? t('workspace.previewAllLines', { total: lines.length })
@@ -963,7 +963,7 @@ export function WorkspacePanel({ sessionId }: WorkspacePanelProps) {
 
     return (
       <>
-        <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 text-[12px]">
+        <div className="flex h-10 shrink-0 items-center gap-1.5 bg-[var(--color-surface-container-lowest)] px-3 text-[12px]">
           <span className="truncate text-[var(--color-text-tertiary)]">{status?.repoName || 'workspace'}</span>
           {activePreviewTab.path.split('/').map((segment, index, segments) => (
             <span key={`${segment}:${index}`} className="flex min-w-0 items-center gap-1.5">
@@ -1019,7 +1019,7 @@ export function WorkspacePanel({ sessionId }: WorkspacePanelProps) {
       <div
         role="tablist"
         aria-label={t('workspace.previewTabs')}
-        className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3"
+        className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto bg-[var(--color-surface-container-lowest)] px-3"
       >
         {previewTabs.length === 0 ? (
           <div className="flex items-center gap-2 px-1.5 text-[12px] text-[var(--color-text-tertiary)]">
@@ -1129,11 +1129,11 @@ export function WorkspacePanel({ sessionId }: WorkspacePanelProps) {
   return (
     <aside
       data-testid="workspace-panel"
-      className="flex h-full shrink-0 border-l border-[var(--color-border)] bg-[var(--color-surface)]"
+      className="flex h-full shrink-0 bg-[var(--color-surface)]"
       style={{ width: panelWidth, maxWidth: panelMaxWidth, minWidth: panelMinWidth }}
     >
       {hasPreviewTabs && (
-        <div className="flex min-w-0 flex-1 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)]">
+        <div className="flex min-w-0 flex-1 flex-col bg-[var(--color-surface)]">
           {renderPreviewTabs()}
           {renderPreviewContent()}
         </div>
@@ -1142,7 +1142,7 @@ export function WorkspacePanel({ sessionId }: WorkspacePanelProps) {
       <div
         className={`${hasPreviewTabs ? 'basis-[32%] min-w-[220px] max-w-[320px]' : 'w-full'} flex h-full shrink-0 flex-col bg-[var(--color-surface)]`}
       >
-        <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-[var(--color-border)] px-2.5">
+        <div className="flex h-10 shrink-0 items-center gap-1.5 px-2.5">
           <div className="relative min-w-0">
             <button
               type="button"
