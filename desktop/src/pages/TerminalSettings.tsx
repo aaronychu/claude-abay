@@ -305,7 +305,7 @@ export function TerminalSettings({
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-terminal-border)] bg-[var(--color-terminal-bg)] shadow-[var(--shadow-dropdown)]">
-          <div className="flex h-8 items-center gap-2 border-b border-[var(--color-terminal-border)] bg-[var(--color-terminal-header)] px-3">
+          <div className="flex h-8 items-center gap-2 bg-[var(--color-terminal-header)] px-3">
             <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-terminal-danger)]" />
             <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-terminal-warning)]" />
             <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-terminal-accent)]" />

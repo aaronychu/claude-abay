@@ -129,7 +129,7 @@
   --color-surface-container-lowest: #FFFFFF;
   --color-surface-variant: #ECEEF3;
 
-  --color-background: #F7F8FB;
+  --color-background: #FFFFFF;
 
   --color-outline: #7B808C;
   --color-outline-variant: #D8DCE6;
@@ -184,9 +184,9 @@
   --color-sidebar-item-active: rgba(171, 180, 218, 0.34);
   --color-sidebar-item-active-border: rgba(91, 106, 156, 0.10);
   --sidebar-panel-bg-image:
-    linear-gradient(180deg, rgba(203, 212, 250, 0.72), rgba(244, 247, 255, 0.62)),
-    radial-gradient(circle at 18% 8%, rgba(151, 164, 226, 0.24), transparent 38%),
-    radial-gradient(circle at 85% 0%, rgba(255, 255, 255, 0.56), transparent 42%);
+    linear-gradient(180deg, rgba(203, 212, 250, 0.12), rgba(244, 247, 255, 0.08)),
+    radial-gradient(circle at 18% 8%, rgba(151, 164, 226, 0.10), transparent 38%),
+    radial-gradient(circle at 85% 0%, rgba(255, 255, 255, 0.14), transparent 42%);
 
   /* Border aliases */
   --color-border: rgba(27, 30, 38, 0.10);
@@ -298,7 +298,7 @@
   --color-surface-container-highest: #2A2E39;
   --color-surface-container-lowest: #0B0C10;
   --color-surface-variant: #20242E;
-  --color-background: #090A0D;
+  --color-background: #111217;
 
   --color-outline: #7E8491;
   --color-outline-variant: #303541;
@@ -333,9 +333,9 @@
   --color-sidebar-item-active: rgba(255, 255, 255, 0.095);
   --color-sidebar-item-active-border: rgba(255, 255, 255, 0.11);
   --sidebar-panel-bg-image:
-    linear-gradient(180deg, rgba(22, 25, 36, 0.9), rgba(12, 13, 18, 0.82)),
-    radial-gradient(circle at 12% 0%, rgba(106, 124, 171, 0.18), transparent 36%),
-    radial-gradient(circle at 95% 8%, rgba(255, 255, 255, 0.05), transparent 38%);
+    linear-gradient(180deg, rgba(22, 25, 36, 0.18), rgba(12, 13, 18, 0.12)),
+    radial-gradient(circle at 12% 0%, rgba(106, 124, 171, 0.10), transparent 36%),
+    radial-gradient(circle at 95% 8%, rgba(255, 255, 255, 0.04), transparent 38%);
 
   --color-border: rgba(255, 255, 255, 0.10);
   --color-border-focus: rgba(255, 255, 255, 0.24);
@@ -608,7 +608,7 @@ button, input, textarea, select, a, [role="button"] {
   background:
     linear-gradient(90deg, rgba(255, 255, 255, 0.28), transparent 42%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 34%);
-  opacity: 0.8;
+  opacity: 0.15;
 }
 
 [data-theme="light"] .sidebar-panel > * {

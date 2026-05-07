@@ -8,8 +8,12 @@
         "minWidth": 960,
         "minHeight": 640,
         "decorations": false,
-        "transparent": false,
-        "acceptFirstMouse": true
+        "transparent": true,
+        "acceptFirstMouse": true,
+        "windowEffects": {
+          "effects": ["mica"],
+          "state": "active"
+        }
       }
     ]
   }
