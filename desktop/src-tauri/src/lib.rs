@@ -1696,17 +1696,12 @@ pub fn run() {
             setup_system_tray(app)?;
             restore_main_window_state(&app.handle());
 
-            // Force macOS vibrancy effect on the main window
+            // Force macOS Liquid Glass sidebar material on the main window
             #[cfg(target_os = "macos")]
             {
                 if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    use tauri::window::{Effect, EffectState, EffectsBuilder};
-                    let _ = window.set_effects(
-                        EffectsBuilder::new()
-                            .effect(Effect::Sidebar)
-                            .state(EffectState::Active)
-                            .build(),
-                    );
+                    use window_vibrancy::{apply_liquid_glass, NSGlassEffectViewStyle};
+                    let _ = apply_liquid_glass(&window, NSGlassEffectViewStyle::Sidebar, None, None);
                 }
             }
 

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useTranslation } from '../../i18n'
@@ -136,12 +137,12 @@ export function Sidebar() {
         <div className={`flex ${sidebarOpen ? 'items-center justify-between gap-3' : 'flex-col items-center gap-2'}`}>
           <div className={`flex min-w-0 items-center ${sidebarOpen ? 'gap-2.5' : 'justify-center'}`}>
             <img src="/app-icon.png" alt="" className="h-8 flex-shrink-0" />
-            <span
-              className={`sidebar-copy ${sidebarOpen ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} text-[13px] font-semibold tracking-tight text-[var(--color-text-primary)]`}
-              style={{ fontFamily: 'var(--font-headline)' }}
-            >
-              Claude Code <span className="text-[var(--color-primary-container)]">A+BAY</span>
-            </span>
+            <img
+              src="/LCText.svg"
+              alt="Claude Code A+BAY"
+              className={`sidebar-copy ${sidebarOpen ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} h-8 w-auto`}
+              style={{ filter: 'var(--logo-filter)' }}
+            />
           </div>
           <div className={`flex items-center ${sidebarOpen ? 'gap-1.5' : 'flex-col gap-2'}`}>
             <a
@@ -331,7 +332,7 @@ export function Sidebar() {
         <div className="flex-1" aria-hidden="true" />
       )}
 
-      <div className={`border-t border-[var(--color-border)] p-3 ${sidebarOpen ? '' : 'flex justify-center'}`}>
+      <div className={`p-3 ${sidebarOpen ? '' : 'flex justify-center'}`}>
         <NavItem
           active={activeTabId === SETTINGS_TAB_ID}
           collapsed={!sidebarOpen}
@@ -343,39 +344,44 @@ export function Sidebar() {
         </NavItem>
       </div>
 
-      {contextMenu && sidebarOpen && (
-        <div
-          className="fixed z-50 min-w-[140px] rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] py-1"
-          style={{ left: contextMenu.x, top: contextMenu.y, boxShadow: 'var(--shadow-dropdown)' }}
-        >
-          <button
-            onClick={() => {
-              const session = sessions.find((s) => s.id === contextMenu.id)
-              handleStartRename(contextMenu.id, session?.title || '')
-            }}
-            className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
-          >
-            {t('common.rename')}
-          </button>
-          <button
-            onClick={() => handleDelete(contextMenu.id)}
-            className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-error)] transition-colors hover:bg-[var(--color-surface-hover)]"
-          >
-            {t('common.delete')}
-          </button>
-        </div>
-      )}
+      {createPortal(
+        <>
+          {contextMenu && sidebarOpen && (
+            <div
+              className="fixed z-50 min-w-[140px] rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] py-1"
+              style={{ left: contextMenu.x, top: contextMenu.y, boxShadow: 'var(--shadow-dropdown)' }}
+            >
+              <button
+                onClick={() => {
+                  const session = sessions.find((s) => s.id === contextMenu.id)
+                  handleStartRename(contextMenu.id, session?.title || '')
+                }}
+                className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+              >
+                {t('common.rename')}
+              </button>
+              <button
+                onClick={() => handleDelete(contextMenu.id)}
+                className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-error)] transition-colors hover:bg-[var(--color-surface-hover)]"
+              >
+                {t('common.delete')}
+              </button>
+            </div>
+          )}
 
-      <ConfirmDialog
-        open={pendingDeleteSessionId !== null}
-        onClose={() => setPendingDeleteSessionId(null)}
-        onConfirm={confirmDelete}
-        title={t('common.delete')}
-        body={pendingDeleteSessionId ? t('sidebar.confirmDelete') : ''}
-        confirmLabel={t('common.delete')}
-        cancelLabel={t('common.cancel')}
-        confirmVariant="danger"
-      />
+          <ConfirmDialog
+            open={pendingDeleteSessionId !== null}
+            onClose={() => setPendingDeleteSessionId(null)}
+            onConfirm={confirmDelete}
+            title={t('common.delete')}
+            body={pendingDeleteSessionId ? t('sidebar.confirmDelete') : ''}
+            confirmLabel={t('common.delete')}
+            cancelLabel={t('common.cancel')}
+            confirmVariant="danger"
+          />
+        </>,
+        document.body,
+      )}
     </aside>
   )
 }

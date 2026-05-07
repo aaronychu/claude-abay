@@ -3,22 +3,39 @@ import type { ThemeMode } from '../types/settings'
 
 const THEME_STORAGE_KEY = 'claude-abay-theme'
 
+function getSystemAppearance(): 'light' | 'dark' {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
 function getStoredTheme(): ThemeMode {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY)
-    if (stored === 'light' || stored === 'dark') return stored
+    if (stored === 'light' || stored === 'dark' || stored === 'system') return stored
   } catch { /* localStorage unavailable */ }
-  return 'light'
+  return 'system'
+}
+
+function resolveTheme(theme: ThemeMode): 'light' | 'dark' {
+  return theme === 'system' ? getSystemAppearance() : theme
 }
 
 export function applyTheme(theme: ThemeMode) {
   if (typeof document === 'undefined') return
-  document.documentElement.setAttribute('data-theme', theme)
-  document.documentElement.style.colorScheme = theme
+  const resolved = resolveTheme(theme)
+  document.documentElement.setAttribute('data-theme', resolved)
+  document.documentElement.style.colorScheme = resolved
+
+  // system 模式跟随系统，无 mismatch；light/dark 模式下检测是否与系统一致
+  const isMismatch = theme !== 'system' && theme !== getSystemAppearance()
+  document.documentElement.classList.toggle('theme-mismatch', isMismatch)
 }
 
 export function initializeTheme() {
   applyTheme(getStoredTheme())
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    const stored = getStoredTheme()
+    if (stored === 'system') applyTheme('system')
+  })
 }
 
 export type Toast = {
@@ -86,7 +103,9 @@ export const useUIStore = create<UIStore>((set) => ({
 
   toggleTheme: () => {
     set((state) => {
-      const next = state.theme === 'light' ? 'dark' : 'light'
+      const cycle: ThemeMode[] = ['light', 'dark', 'system']
+      const idx = cycle.indexOf(state.theme)
+      const next = cycle[(idx + 1) % cycle.length]!
       applyTheme(next)
       try { localStorage.setItem(THEME_STORAGE_KEY, next) } catch { /* noop */ }
       return { theme: next }

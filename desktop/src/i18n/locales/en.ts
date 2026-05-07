@@ -613,7 +613,8 @@ export const en = {
 
   // Settings > General
   'settings.general.appearanceTitle': 'Appearance',
-  'settings.general.appearanceDescription': 'Switch between the original light workspace and the new dark workspace.',
+  'settings.general.appearanceDescription': 'Choose your preferred color scheme or follow the system setting.',
+  'settings.general.appearance.system': 'System',
   'settings.general.appearance.light': 'Light',
   'settings.general.appearance.dark': 'Dark',
   'settings.general.languageTitle': 'Language',
