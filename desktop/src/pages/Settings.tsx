@@ -1389,6 +1389,7 @@ function GeneralSettings() {
   ]
 
   const THEMES: Array<{ value: ThemeMode; label: string }> = [
+    { value: 'system', label: t('settings.general.appearance.system') },
     { value: 'light', label: t('settings.general.appearance.light') },
     { value: 'dark', label: t('settings.general.appearance.dark') },
   ]

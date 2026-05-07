@@ -169,6 +169,9 @@
   --motion-sidebar-duration: 280ms;
   --motion-sidebar-easing: cubic-bezier(0.22, 1, 0.36, 1);
 
+  /* Logo filter for SVG color adaptation */
+  --logo-filter: none;
+
   /* Surface aliases */
   --color-surface-sidebar: rgba(222, 228, 251, 0.66);
   --color-surface-hover: rgba(246, 247, 250, 0.92);
@@ -279,6 +282,9 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
+
+  /* Logo filter: invert SVG to light for dark theme */
+  --logo-filter: invert(1);
 
   --color-primary: #F4F5F7;
   --color-primary-container: #D8DCE5;
@@ -510,7 +516,7 @@ button, input, textarea, select, a, [role="button"] {
   textarea,
   select
 ):focus {
-  background-color: rgba(255, 255, 255, 0.98);
+  /* background-color: rgba(255, 255, 255, 0.98); */
   border-color: rgba(21, 23, 28, 0.28);
 }
 
@@ -560,7 +566,7 @@ button, input, textarea, select, a, [role="button"] {
   textarea,
   select
 ):focus {
-  background-color: rgba(255, 255, 255, 0.07);
+  /* background-color: rgba(255, 255, 255, 0.07); */
   border-color: rgba(255, 255, 255, 0.24);
 }
 
@@ -590,7 +596,7 @@ button, input, textarea, select, a, [role="button"] {
   background-repeat: no-repeat;
   backdrop-filter: blur(26px) saturate(1.32);
   -webkit-backdrop-filter: blur(26px) saturate(1.32);
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.54);
+  /* box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.54); */
   transition:
     background-color var(--motion-sidebar-duration) var(--motion-sidebar-easing),
     border-color var(--motion-sidebar-duration) var(--motion-sidebar-easing);
@@ -612,6 +618,32 @@ button, input, textarea, select, a, [role="button"] {
 }
 
 [data-theme="light"] .sidebar-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Theme mismatch overlays — force sidebar to match app theme over native vibrancy/mica */
+.theme-mismatch[data-theme="dark"] .sidebar-panel {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* filter: brightness(0.1); */
+  background: rgba(0, 0, 0, 0.75);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.theme-mismatch[data-theme="light"] .sidebar-panel {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* filter: brightness(1.8); */
+  background: rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.theme-mismatch .sidebar-panel > * {
   position: relative;
   z-index: 1;
 }

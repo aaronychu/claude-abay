@@ -3,7 +3,7 @@
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk'
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max'
-export type ThemeMode = 'light' | 'dark'
+export type ThemeMode = 'light' | 'dark' | 'system'
 export type WebSearchMode = 'auto' | 'anthropic' | 'tavily' | 'brave' | 'disabled'
 
 export type WebSearchSettings = {
