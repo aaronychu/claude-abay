@@ -36,6 +36,11 @@ export function initializeTheme() {
     const stored = getStoredTheme()
     if (stored === 'system') applyTheme('system')
   })
+
+  // Windows: transparent window + Mica needs a CSS background for click events
+  if (/Win/.test(navigator.platform)) {
+    document.documentElement.classList.add('platform-windows')
+  }
 }
 
 export type Toast = {

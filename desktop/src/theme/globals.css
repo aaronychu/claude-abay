@@ -447,6 +447,13 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Windows: Mica effect needs a CSS background for click events to work */
+.platform-windows html,
+.platform-windows body,
+.platform-windows #root {
+  background: var(--color-surface);
+}
+
 ::selection {
   background: var(--color-selection-bg);
   color: var(--color-selection-fg);
