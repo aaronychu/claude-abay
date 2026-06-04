@@ -12,39 +12,41 @@ import {
   useWorkspaceChatContextStore,
   type WorkspaceChatReference,
 } from '../../stores/workspaceChatContextStore'
-import { sessionsApi } from '../../api/sessions'
+import { sessionsApi, type SessionGitInfo } from '../../api/sessions'
+import { agentsApi } from '../../api/agents'
 import { PermissionModeSelector } from '../controls/PermissionModeSelector'
 import { ModelSelector } from '../controls/ModelSelector'
 import type { AttachmentRef } from '../../types/chat'
 import { AttachmentGallery } from './AttachmentGallery'
+import { ComposerDropOverlay } from './ComposerDropOverlay'
 import { ProjectContextChip } from '../shared/ProjectContextChip'
-import { DirectoryPicker } from '../shared/DirectoryPicker'
+import { RepositoryLaunchControls } from '../shared/RepositoryLaunchControls'
 import { FileSearchMenu, type FileSearchMenuHandle } from './FileSearchMenu'
 import { LocalSlashCommandPanel, type LocalSlashCommandName } from './LocalSlashCommandPanel'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
 import {
-  FALLBACK_SLASH_COMMANDS,
+  appendAgentSlashCommands,
+  buildAgentSlashCommands,
+  getLocalizedFallbackCommands,
+  filterSlashCommands,
   findSlashTrigger,
   mergeSlashCommands,
   replaceSlashToken,
   resolveSlashUiAction,
 } from './composerUtils'
+import { useMobileViewport } from '../../hooks/useMobileViewport'
+import { isDesktopRuntime } from '../../lib/desktopRuntime'
+import {
+  filesToComposerAttachments,
+  selectNativeFileAttachments,
+  type ComposerAttachment,
+} from '../../lib/composerAttachments'
+import { useComposerFileDrop } from './useComposerFileDrop'
+import { shouldSubmitOnEnter } from './sendShortcut'
 
-type GitInfo = { branch: string | null; repoName: string | null; workDir: string; changedFiles: number }
+type GitInfo = SessionGitInfo
 
-type Attachment = {
-  id: string
-  name: string
-  type: 'image' | 'file'
-  path?: string
-  mimeType?: string
-  previewUrl?: string
-  data?: string
-  lineStart?: number
-  lineEnd?: number
-  note?: string
-  quote?: string
-}
+type Attachment = ComposerAttachment
 
 type ChatInputProps = {
   variant?: 'default' | 'hero'
@@ -58,7 +60,8 @@ function workspaceReferenceToAttachment(reference: WorkspaceChatReference): Atta
     id: reference.id,
     name: reference.name,
     type: 'file',
-    path: reference.path,
+    path: reference.kind === 'chat-selection' ? undefined : reference.path,
+    isDirectory: reference.isDirectory,
     lineStart: reference.lineStart,
     lineEnd: reference.lineEnd,
     note: reference.note,
@@ -66,8 +69,24 @@ function workspaceReferenceToAttachment(reference: WorkspaceChatReference): Atta
   }
 }
 
+function insertComposerTokenAtRange(value: string, start: number, end: number, token: string) {
+  const boundedStart = Math.max(0, Math.min(start, value.length))
+  const boundedEnd = Math.max(boundedStart, Math.min(end, value.length))
+  const before = value.slice(0, boundedStart)
+  const after = value.slice(boundedEnd)
+  const leadingSpace = before.length > 0 && !/\s$/.test(before) ? ' ' : ''
+  const trailingSpace = after.length > 0 && !/^\s/.test(after) ? ' ' : ''
+  const insertion = `${leadingSpace}${token}${trailingSpace}`
+
+  return {
+    value: `${before}${insertion}${after}`,
+    cursorPos: before.length + insertion.length,
+  }
+}
+
 export function ChatInput({ variant = 'default', compact = false }: ChatInputProps) {
   const t = useTranslation()
+  const isMobileComposer = useMobileViewport() && !isDesktopRuntime()
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
@@ -78,46 +97,92 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const [atCursorPos, setAtCursorPos] = useState(-1)
   const [slashFilter, setSlashFilter] = useState('')
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
+  const [agentSlashCommands, setAgentSlashCommands] = useState<ReturnType<typeof buildAgentSlashCommands>>([])
+  const [launchWorkDir, setLaunchWorkDir] = useState('')
+  const [launchBranch, setLaunchBranch] = useState<string | null>(null)
+  const [launchUseWorktree, setLaunchUseWorktree] = useState(false)
+  const [launchReady, setLaunchReady] = useState(true)
+  const [launchTransitioning, setLaunchTransitioning] = useState(false)
   const composingRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
   const slashMenuRef = useRef<HTMLDivElement>(null)
   const fileSearchRef = useRef<FileSearchMenuHandle>(null)
   const slashItemRefs = useRef<(HTMLButtonElement | null)[]>([])
-  const { sendMessage, stopGeneration } = useChatStore()
+  const previousActiveTabIdRef = useRef<string | null>(null)
+  const inputRef = useRef(input)
+  const attachmentsRef = useRef(attachments)
+  const setComposerInput = useCallback((value: string) => {
+    inputRef.current = value
+    setInput(value)
+  }, [])
+  const setComposerAttachments = useCallback((value: Attachment[] | ((previous: Attachment[]) => Attachment[])) => {
+    setAttachments((previous) => {
+      const next = typeof value === 'function' ? value(previous) : value
+      attachmentsRef.current = next
+      return next
+    })
+  }, [])
+  const { sendMessage, stopGeneration, clearComposerPrefill, clearComposerInsertion } = useChatStore()
   const activeTabId = useTabStore((s) => s.activeTabId)
   const sessionState = useChatStore((s) => activeTabId ? s.sessions[activeTabId] : undefined)
   const chatState = sessionState?.chatState ?? 'idle'
   const slashCommands = sessionState?.slashCommands ?? []
   const composerPrefill = sessionState?.composerPrefill ?? null
-  const messageCount = sessionState?.messages?.length ?? 0
+  const composerInsertion = sessionState?.composerInsertion ?? null
   const runtimeSelection = useSessionRuntimeStore((state) =>
     activeTabId ? state.selections[activeTabId] : undefined,
   )
   const currentModel = useSettingsStore((state) => state.currentModel)
+  const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const runtimeSelectionKey = runtimeSelection
-    ? `${runtimeSelection.providerId ?? 'official'}:${runtimeSelection.modelId}`
+    ? `${runtimeSelection.providerId ?? 'official'}:${runtimeSelection.modelId}:${runtimeSelection.effortLevel ?? 'auto'}`
     : undefined
   const runtimeModelLabel = runtimeSelection?.modelId ?? currentModel?.name ?? currentModel?.id
   const activeSession = useSessionStore((state) => activeTabId ? state.sessions.find((session) => session.id === activeTabId) ?? null : null)
+  const loadedMessageCount = sessionState?.messages?.length ?? 0
+  const messageCount = Math.max(loadedMessageCount, activeSession?.messageCount ?? 0)
   const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null)
-  const hasMessages = useChatStore((s) => activeTabId ? (s.sessions[activeTabId]?.messages?.length ?? 0) > 0 : false)
   const workspaceReferences = useWorkspaceChatContextStore(
     (s) => activeTabId ? s.referencesBySession[activeTabId] ?? EMPTY_WORKSPACE_REFERENCES : EMPTY_WORKSPACE_REFERENCES,
   )
   const addWorkspaceReference = useWorkspaceChatContextStore((s) => s.addReference)
   const removeWorkspaceReference = useWorkspaceChatContextStore((s) => s.removeReference)
   const clearWorkspaceReferences = useWorkspaceChatContextStore((s) => s.clearReferences)
+  const saveComposerDraft = useCallback((sessionId: string) => {
+    const draft = {
+      input: inputRef.current,
+      attachments: attachmentsRef.current,
+    }
+    const chatStore = useChatStore.getState()
+    if (draft.input.length === 0 && draft.attachments.length === 0) {
+      chatStore.clearComposerDraft(sessionId)
+      return
+    }
+    chatStore.setComposerDraft(sessionId, draft)
+  }, [])
 
   const isMemberSession = !!memberInfo
   const isActive = chatState !== 'idle'
   const isWorkspaceMissing = activeSession?.workDirExists === false
   const hasWorkspaceReferences = !isMemberSession && workspaceReferences.length > 0
-  const canSubmit = !isWorkspaceMissing && (input.trim().length > 0 || (!isMemberSession && (attachments.length > 0 || hasWorkspaceReferences)))
   const isHeroComposer = variant === 'hero' && !isMemberSession && !compact
   const resolvedWorkDir = activeSession?.workDir || gitInfo?.workDir || undefined
+  const showLaunchControls = !isMemberSession && messageCount === 0
+  const useCompactControls = compact || isMobileComposer
+  const iconOnlyAction = compact || isMobileComposer
+  const activeLaunchWorkDir = showLaunchControls ? (launchWorkDir || resolvedWorkDir || '') : (resolvedWorkDir || '')
+  const embedLaunchControlsInHero = isHeroComposer && !useCompactControls && showLaunchControls
+  const pendingSlashUiAction = !isMemberSession && input.trim().startsWith('/')
+    ? resolveSlashUiAction(input.trim().slice(1))
+    : null
+  const canSubmit = !isWorkspaceMissing &&
+    !launchTransitioning &&
+    (!showLaunchControls || launchReady || !!pendingSlashUiAction) &&
+    (input.trim().length > 0 || (!isMemberSession && (attachments.length > 0 || hasWorkspaceReferences)))
   const composerAttachments = useMemo(
     () => [
       ...attachments,
@@ -125,27 +190,69 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     ],
     [attachments, workspaceReferences],
   )
+  const slashCommandCount = slashCommands.length
+
+  useEffect(() => {
+    inputRef.current = input
+  }, [input])
+
+  useEffect(() => {
+    attachmentsRef.current = attachments
+  }, [attachments])
+
+  useEffect(() => {
+    const previousActiveTabId = previousActiveTabIdRef.current
+
+    if (previousActiveTabId === activeTabId) return
+
+    if (previousActiveTabId) {
+      saveComposerDraft(previousActiveTabId)
+    }
+
+    const nextDraft = activeTabId ? useChatStore.getState().sessions[activeTabId]?.composerDraft : undefined
+    setComposerInput(nextDraft?.input ?? '')
+    setComposerAttachments(nextDraft?.attachments ?? [])
+    setPlusMenuOpen(false)
+    setSlashMenuOpen(false)
+    setFileSearchOpen(false)
+    setLocalSlashPanel(null)
+    setSlashFilter('')
+    setAtFilter('')
+    setAtCursorPos(-1)
+    previousActiveTabIdRef.current = activeTabId
+  }, [activeTabId, saveComposerDraft, setComposerAttachments, setComposerInput])
+
+  useEffect(() => {
+    return () => {
+      const currentActiveTabId = previousActiveTabIdRef.current
+      if (currentActiveTabId) saveComposerDraft(currentActiveTabId)
+    }
+  }, [saveComposerDraft])
 
   useEffect(() => {
     textareaRef.current?.focus()
   }, [isActive])
 
   useEffect(() => {
-    if (!composerPrefill) return
+    if (!composerPrefill || !activeTabId) return
 
-    setInput(composerPrefill.text)
-    setAttachments(
-      (composerPrefill.attachments ?? [])
-        .filter((attachment) => attachment.type === 'image' || attachment.data)
-        .map((attachment, index) => ({
-          id: `rewind-prefill-${composerPrefill.nonce}-${index}`,
-          name: attachment.name,
-          type: attachment.type,
-          mimeType: attachment.mimeType,
-          previewUrl: attachment.type === 'image' ? attachment.data : undefined,
-          data: attachment.data,
-        })),
-    )
+    const nextAttachments = (composerPrefill.attachments ?? [])
+      .filter((attachment) => attachment.type === 'image' || attachment.data)
+      .map((attachment, index) => ({
+        id: `composer-prefill-${composerPrefill.nonce}-${index}`,
+        name: attachment.name,
+        type: attachment.type,
+        mimeType: attachment.mimeType,
+        previewUrl: attachment.type === 'image' ? attachment.data : undefined,
+        data: attachment.data,
+      }))
+
+    if (composerPrefill.mode === 'append') {
+      setComposerAttachments((previous) => [...previous, ...nextAttachments])
+    } else {
+      setComposerInput(composerPrefill.text)
+      setComposerAttachments(nextAttachments)
+    }
     setPlusMenuOpen(false)
     setSlashMenuOpen(false)
     setFileSearchOpen(false)
@@ -156,12 +263,53 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     requestAnimationFrame(() => {
       const el = textareaRef.current
       el?.focus()
-      const cursor = composerPrefill.text.length
-      el?.setSelectionRange(cursor, cursor)
+      if (composerPrefill.mode !== 'append') {
+        const cursor = composerPrefill.text.length
+        el?.setSelectionRange(cursor, cursor)
+      }
     })
-  }, [composerPrefill])
+    clearComposerPrefill(activeTabId, composerPrefill.nonce)
+  }, [
+    activeTabId,
+    clearComposerPrefill,
+    composerPrefill,
+    setComposerAttachments,
+    setComposerInput,
+  ])
 
   useEffect(() => {
+    if (!composerInsertion || !activeTabId || isMemberSession) return
+
+    const el = textareaRef.current
+    const currentInput = inputRef.current
+    const start = el?.selectionStart ?? currentInput.length
+    const end = el?.selectionEnd ?? start
+    const next = insertComposerTokenAtRange(currentInput, start, end, composerInsertion.text)
+
+    if (composerInsertion.reference) {
+      addWorkspaceReference(activeTabId, composerInsertion.reference)
+    }
+    setComposerInput(next.value)
+    setFileSearchOpen(false)
+    setSlashMenuOpen(false)
+    setAtFilter('')
+    setAtCursorPos(-1)
+    clearComposerInsertion(activeTabId, composerInsertion.nonce)
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(next.cursorPos, next.cursorPos)
+    })
+  }, [
+    activeTabId,
+    addWorkspaceReference,
+    clearComposerInsertion,
+    composerInsertion,
+    isMemberSession,
+    setComposerInput,
+  ])
+
+  const refreshGitInfo = useCallback(() => {
     if (!activeTabId) {
       setGitInfo(null)
       return
@@ -174,12 +322,55 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   }, [activeTabId, isMemberSession])
 
   useEffect(() => {
+    refreshGitInfo()
+  }, [refreshGitInfo])
+
+  useEffect(() => {
+    if (!activeTabId || isMemberSession || messageCount === 0) return
+    const timeout = setTimeout(refreshGitInfo, chatState === 'idle' ? 0 : 500)
+    return () => clearTimeout(timeout)
+  }, [activeTabId, chatState, isMemberSession, messageCount, refreshGitInfo, slashCommandCount])
+
+  useEffect(() => {
     if (!isMemberSession) return
-    setAttachments([])
+    setComposerAttachments([])
     setPlusMenuOpen(false)
     setSlashMenuOpen(false)
     setFileSearchOpen(false)
   }, [isMemberSession, activeTabId])
+
+  useEffect(() => {
+    if (isMemberSession) {
+      setAgentSlashCommands([])
+      return
+    }
+
+    let cancelled = false
+    agentsApi.list(resolvedWorkDir)
+      .then(({ activeAgents }) => {
+        if (cancelled) return
+        setAgentSlashCommands(buildAgentSlashCommands(activeAgents))
+      })
+      .catch(() => {
+        if (!cancelled) setAgentSlashCommands([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isMemberSession, resolvedWorkDir])
+
+  useEffect(() => {
+    if (!showLaunchControls) return
+    const nextWorkDir = activeSession?.workDir || gitInfo?.workDir || ''
+    setLaunchWorkDir((current) => {
+      if (current === nextWorkDir) return current
+      setLaunchBranch(null)
+      setLaunchUseWorktree(false)
+      setLaunchReady(!nextWorkDir)
+      return nextWorkDir
+    })
+  }, [activeSession?.workDir, activeTabId, gitInfo?.workDir, showLaunchControls])
 
   useEffect(() => {
     const el = textareaRef.current
@@ -249,18 +440,15 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   }, [fileSearchOpen])
 
   const allSlashCommands = useMemo(
-    () => mergeSlashCommands(slashCommands, FALLBACK_SLASH_COMMANDS),
-    [slashCommands],
+    () => appendAgentSlashCommands(
+      mergeSlashCommands(slashCommands, getLocalizedFallbackCommands(t)),
+      agentSlashCommands,
+    ),
+    [agentSlashCommands, slashCommands, t],
   )
 
   const filteredCommands = useMemo(() => {
-    const source = allSlashCommands
-    if (!slashFilter) return source
-    const lower = slashFilter.toLowerCase()
-    return source.filter((command) => (
-      command.name.toLowerCase().includes(lower) ||
-      command.description.toLowerCase().includes(lower)
-    ))
+    return filterSlashCommands(allSlashCommands, slashFilter)
   }, [allSlashCommands, slashFilter])
 
   const exactSlashCommand = useMemo(() => {
@@ -329,11 +517,11 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = event.target.value
     if (isMemberSession) {
-      setInput(value)
+      setComposerInput(value)
       return
     }
     const cursorPos = event.target.selectionStart ?? value.length
-    setInput(value)
+    setComposerInput(value)
     detectSlashTrigger(value, cursorPos)
     detectAtTrigger(value, cursorPos)
   }
@@ -343,7 +531,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     if (!el) return
     const cursorPos = el.selectionStart ?? input.length
     const replacement = replaceSlashToken(input, cursorPos, command)
-    setInput(replacement.value)
+    setComposerInput(replacement.value)
     setSlashMenuOpen(false)
     requestAnimationFrame(() => {
       el.focus()
@@ -351,29 +539,71 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     })
   }, [input])
 
-  const handleSubmit = () => {
+  const replaceEmptySession = useCallback(async (
+    workDir: string,
+    repository?: { branch?: string | null; worktree?: boolean },
+  ) => {
+    if (!activeTabId) return null
+    const oldId = activeTabId
+    const { createSession, deleteSession } = useSessionStore.getState()
+    const { replaceTabSession } = useTabStore.getState()
+    const { disconnectSession, connectToSession } = useChatStore.getState()
+    const newId = await createSession(
+      workDir || undefined,
+      repository ? { repository } : undefined,
+    )
+    useSessionRuntimeStore.getState().moveSelection(oldId, newId)
+    disconnectSession(oldId)
+    replaceTabSession(oldId, newId)
+    connectToSession(newId)
+    deleteSession(oldId).catch(() => {})
+    return newId
+  }, [activeTabId])
+
+  const handleLaunchWorkDirChange = useCallback(async (newWorkDir: string) => {
+    setLaunchWorkDir(newWorkDir)
+    setLaunchBranch(null)
+    setLaunchUseWorktree(false)
+    setLaunchReady(!newWorkDir)
+    if (!activeTabId) return
+
+    setLaunchTransitioning(true)
+    try {
+      await replaceEmptySession(newWorkDir)
+    } catch (error) {
+      useUIStore.getState().addToast({
+        type: 'error',
+        message: error instanceof Error ? error.message : t('empty.failedToCreate'),
+      })
+    } finally {
+      setLaunchTransitioning(false)
+    }
+  }, [activeTabId, replaceEmptySession, t])
+
+  const handleSubmit = async () => {
     const text = input.trim()
     if ((!text && ((!attachments.length && !hasWorkspaceReferences) || isMemberSession)) || isWorkspaceMissing) return
 
-    const slashUiAction = !isMemberSession && text.startsWith('/') ? resolveSlashUiAction(text.slice(1)) : null
-    if (slashUiAction?.type === 'panel') {
-      setLocalSlashPanel(slashUiAction.command as LocalSlashCommandName)
-      setInput('')
+    if (pendingSlashUiAction?.type === 'panel') {
+      setLocalSlashPanel(pendingSlashUiAction.command as LocalSlashCommandName)
+      setComposerInput('')
       setSlashMenuOpen(false)
       setFileSearchOpen(false)
       setPlusMenuOpen(false)
       return
     }
 
-    if (slashUiAction?.type === 'settings') {
-      useUIStore.getState().setPendingSettingsTab(slashUiAction.tab)
+    if (pendingSlashUiAction?.type === 'settings') {
+      useUIStore.getState().setPendingSettingsTab(pendingSlashUiAction.tab)
       useTabStore.getState().openTab(SETTINGS_TAB_ID, 'Settings', 'settings')
-      setInput('')
+      setComposerInput('')
       setSlashMenuOpen(false)
       setFileSearchOpen(false)
       setPlusMenuOpen(false)
       return
     }
+
+    if (showLaunchControls && (!launchReady || launchTransitioning)) return
 
     const workspaceReferencePrompt = !isMemberSession
       ? formatWorkspaceReferencePrompt(workspaceReferences)
@@ -381,7 +611,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     const contentForModel = [workspaceReferencePrompt, text].filter(Boolean).join('\n\n')
     const displayContent = text || (
       workspaceReferences.length > 0
-        ? t('chat.workspaceReferencesOnly', { count: workspaceReferences.length })
+        ? t('chat.contextReferencesOnly', { count: workspaceReferences.length })
         : ''
     )
     const uploadAttachmentPayload: AttachmentRef[] = attachments.map((attachment) => ({
@@ -395,21 +625,25 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       note: attachment.note,
       quote: attachment.quote,
     }))
-    const workspaceAttachmentPayload: AttachmentRef[] = workspaceReferences.map((reference) => ({
-      type: 'file' as const,
-      name: reference.name,
-      path: reference.absolutePath ?? reference.path,
-      lineStart: reference.lineStart,
-      lineEnd: reference.lineEnd,
-      note: reference.note,
-      quote: reference.quote,
-    }))
+    const workspaceAttachmentPayload: AttachmentRef[] = workspaceReferences
+      .filter((reference) => reference.kind !== 'chat-selection')
+      .map((reference) => ({
+        type: 'file' as const,
+        name: reference.name,
+        path: reference.absolutePath ?? reference.path,
+        isDirectory: reference.isDirectory,
+        lineStart: reference.lineStart,
+        lineEnd: reference.lineEnd,
+        note: reference.note,
+        quote: reference.quote,
+      }))
     const visibleAttachmentPayload: AttachmentRef[] = [
       ...uploadAttachmentPayload,
       ...workspaceReferences.map((reference) => ({
         type: 'file' as const,
         name: reference.name,
-        path: reference.path,
+        path: reference.kind === 'chat-selection' ? undefined : reference.path,
+        isDirectory: reference.isDirectory,
         lineStart: reference.lineStart,
         lineEnd: reference.lineEnd,
         note: reference.note,
@@ -417,13 +651,44 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       })),
     ]
 
-    sendMessage(activeTabId!, contentForModel, [...uploadAttachmentPayload, ...workspaceAttachmentPayload], {
+    let targetSessionId = activeTabId!
+    if (showLaunchControls && activeLaunchWorkDir && launchBranch) {
+      const shouldReplaceForRepositoryLaunch =
+        launchUseWorktree ||
+        (gitInfo?.branch ? launchBranch !== gitInfo.branch : true)
+      if (shouldReplaceForRepositoryLaunch) {
+        setLaunchTransitioning(true)
+        try {
+          const newSessionId = await replaceEmptySession(activeLaunchWorkDir, {
+            branch: launchBranch,
+            worktree: launchUseWorktree,
+          })
+          if (!newSessionId) return
+          targetSessionId = newSessionId
+        } catch (error) {
+          useUIStore.getState().addToast({
+            type: 'error',
+            message: error instanceof Error ? error.message : t('empty.failedToCreate'),
+          })
+          return
+        } finally {
+          setLaunchTransitioning(false)
+        }
+      }
+    }
+
+    sendMessage(targetSessionId, contentForModel, [...uploadAttachmentPayload, ...workspaceAttachmentPayload], {
       displayContent,
       displayAttachments: visibleAttachmentPayload,
     })
-    setInput('')
-    setAttachments([])
-    if (!isMemberSession) clearWorkspaceReferences(activeTabId!)
+    setComposerInput('')
+    setComposerAttachments([])
+    useChatStore.getState().clearComposerDraft(activeTabId!)
+    if (targetSessionId !== activeTabId) useChatStore.getState().clearComposerDraft(targetSessionId)
+    if (!isMemberSession) {
+      clearWorkspaceReferences(activeTabId!)
+      if (targetSessionId !== activeTabId) clearWorkspaceReferences(targetSessionId)
+    }
     setPlusMenuOpen(false)
     setSlashMenuOpen(false)
     setFileSearchOpen(false)
@@ -437,7 +702,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     // Route file search navigation keys to FileSearchMenu
     if (fileSearchOpen) {
       const key = event.key
-      if (key === 'ArrowDown' || key === 'ArrowUp' || key === 'Enter' || key === 'Tab' || key === 'Escape') {
+      if (key === 'ArrowDown' || key === 'ArrowUp' || key === 'ArrowRight' || key === 'Enter' || key === 'Tab' || key === 'Escape') {
         event.preventDefault()
         if (key === 'Escape') {
           setFileSearchOpen(false)
@@ -472,13 +737,18 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
         return
       }
       if (event.key === 'Enter') {
-        if (exactSlashCommand && slashFilter.trim().toLowerCase() === exactSlashCommand.name.toLowerCase()) {
+        const selected = filteredCommands[slashSelectedIndex]
+        if (
+          exactSlashCommand &&
+          selected?.name.toLowerCase() === exactSlashCommand.name.toLowerCase() &&
+          slashFilter.trim().toLowerCase() === exactSlashCommand.name.toLowerCase() &&
+          shouldSubmitOnEnter(event, chatSendBehavior)
+        ) {
           event.preventDefault()
           handleSubmit()
           return
         }
         event.preventDefault()
-        const selected = filteredCommands[slashSelectedIndex]
         if (selected) selectSlashCommand(selected.name)
         return
       }
@@ -495,7 +765,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       }
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (shouldSubmitOnEnter(event, chatSendBehavior)) {
       event.preventDefault()
       handleSubmit()
     }
@@ -519,7 +789,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       const id = `att-${Date.now()}-${Math.random().toString(36).slice(2)}`
       const reader = new FileReader()
       reader.onload = () => {
-        setAttachments((prev) => [
+        setComposerAttachments((prev) => [
           ...prev,
           {
             id,
@@ -537,46 +807,61 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     if (!hasImage) return
   }
 
+  const appendFiles = useCallback((files: FileList | File[]) => {
+    void filesToComposerAttachments(files)
+      .then((nextAttachments) => {
+        if (nextAttachments.length === 0) return
+        setComposerAttachments((prev) => [...prev, ...nextAttachments])
+      })
+      .catch((error) => {
+        console.warn('[attachments] Failed to read selected files', error)
+      })
+  }, [setComposerAttachments])
+
+  const appendAttachments = useCallback((nextAttachments: Attachment[]) => {
+    if (nextAttachments.length === 0) return
+    setComposerAttachments((prev) => [...prev, ...nextAttachments])
+  }, [setComposerAttachments])
+
+  const { isDragActive, dragHandlers } = useComposerFileDrop({
+    disabled: isMemberSession || isWorkspaceMissing,
+    panelRef,
+    onAttachments: appendAttachments,
+    onError: (error) => {
+      console.warn('[attachments] Failed to read dropped files', error)
+    },
+  })
+
+  const openAttachmentPicker = useCallback(() => {
+    setPlusMenuOpen(false)
+    if (!isDesktopRuntime()) {
+      fileInputRef.current?.click()
+      return
+    }
+
+    void selectNativeFileAttachments()
+      .then((nativeAttachments) => {
+        if (nativeAttachments) {
+          if (nativeAttachments.length > 0) {
+            setComposerAttachments((prev) => [...prev, ...nativeAttachments])
+          }
+          return
+        }
+        fileInputRef.current?.click()
+      })
+  }, [setComposerAttachments])
+
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (isMemberSession) return
     const files = event.target.files
     if (!files) return
 
-    Array.from(files).forEach((file) => {
-      const id = `att-${Date.now()}-${Math.random().toString(36).slice(2)}`
-      const isImage = file.type.startsWith('image/')
-      const reader = new FileReader()
-      reader.onload = () => {
-        setAttachments((prev) => [
-          ...prev,
-          {
-            id,
-            name: file.name,
-            type: isImage ? 'image' : 'file',
-            mimeType: file.type || undefined,
-            previewUrl: isImage ? (reader.result as string) : undefined,
-            data: reader.result as string,
-          },
-        ])
-      }
-      reader.readAsDataURL(file)
-    })
-
+    appendFiles(files)
     event.target.value = ''
   }
 
-  const handleDrop = (event: React.DragEvent) => {
-    event.preventDefault()
-    if (isMemberSession) return
-    const files = event.dataTransfer.files
-    if (files.length > 0) {
-      const fakeEvent = { target: { files } } as React.ChangeEvent<HTMLInputElement>
-      handleFileSelect(fakeEvent)
-    }
-  }
-
   const removeAttachment = (id: string) => {
-    setAttachments((prev) => prev.filter((attachment) => attachment.id !== id))
+    setComposerAttachments((prev) => prev.filter((attachment) => attachment.id !== id))
     if (activeTabId) removeWorkspaceReference(activeTabId, id)
   }
 
@@ -585,7 +870,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     const el = textareaRef.current
     const cursorPos = el?.selectionStart ?? input.length
     const replacement = replaceSlashToken(input, cursorPos, '', { trailingSpace: false })
-    setInput(replacement.value)
+    setComposerInput(replacement.value)
     setPlusMenuOpen(false)
     setSlashFilter('')
     setSlashMenuOpen(true)
@@ -609,51 +894,62 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
 
   return (
     <div
+      data-testid="chat-input-shell"
       className={
         isHeroComposer
-          ? 'bg-[var(--color-surface)] px-8 pb-4'
+          ? `bg-[var(--color-surface)] ${isMobileComposer ? 'px-4 pb-3' : 'px-8 pb-4'}`
           : compact
-            ? 'border-t border-[var(--color-border)]/70 bg-[var(--color-surface)] px-3 py-3'
-            : 'bg-[var(--color-surface)] px-4 py-4'
+            ? `border-t border-[var(--color-border)]/70 bg-[var(--color-surface)] ${isMobileComposer ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2' : 'px-3 py-3'}`
+            : `bg-[var(--color-surface)] ${isMobileComposer ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2' : 'px-4 py-4'}`
       }
     >
       <div
         className={
           isHeroComposer
-            ? 'mx-auto flex w-full max-w-3xl flex-col gap-2'
-            : compact
+            ? 'mx-auto flex w-full max-w-3xl flex-col'
+          : compact
               ? 'mx-auto max-w-full'
-              : 'mx-auto max-w-[860px]'
+              : `${isMobileComposer ? 'mx-0 max-w-none' : 'mx-auto max-w-[860px]'}`
         }
       >
         <div
+          ref={panelRef}
+          data-testid="chat-input-panel"
           className={isHeroComposer
-            ? 'glass-panel relative flex flex-col gap-3 rounded-xl p-4 transition-colors'
+            ? `glass-panel relative flex flex-col gap-3 overflow-visible ${embedLaunchControlsInHero ? 'rounded-xl' : 'rounded-t-xl rounded-b-none'} p-4 transition-colors ${isDragActive ? 'composer-drop-target-active' : ''}`
             : compact
-              ? 'glass-panel relative rounded-xl p-3 transition-colors'
-              : 'glass-panel relative rounded-xl p-4 transition-colors'}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={handleDrop}
+              ? `glass-panel relative overflow-visible p-3 transition-colors ${isMobileComposer ? 'rounded-2xl shadow-[0_-12px_36px_rgba(54,35,28,0.12)]' : 'rounded-xl'} ${isDragActive ? 'composer-drop-target-active' : ''}`
+              : `glass-panel relative overflow-visible transition-colors ${isMobileComposer ? 'rounded-2xl p-3 shadow-[0_-12px_36px_rgba(54,35,28,0.12)]' : 'rounded-xl p-4'} ${isDragActive ? 'composer-drop-target-active' : ''}`}
+          {...dragHandlers}
         >
+          {isDragActive && (
+            <ComposerDropOverlay
+              testId="chat-input-drop-overlay"
+              title={t('chat.dropFilesTitle')}
+              description={t('chat.dropFilesHint')}
+            />
+          )}
+
           {!isMemberSession && fileSearchOpen && (
             <FileSearchMenu
               ref={fileSearchRef}
-              cwd={resolvedWorkDir || ''}
+              cwd={activeLaunchWorkDir || resolvedWorkDir || ''}
               filter={atFilter}
+              compact={isMobileComposer}
               onNavigate={(relativePath) => {
                 if (atCursorPos < 0) return
                 const replacement = `@${relativePath}`
                 const tokenEnd = atCursorPos + 1 + atFilter.length
                 const newValue = `${input.slice(0, atCursorPos)}${replacement}${input.slice(tokenEnd)}`
                 const newCursorPos = atCursorPos + replacement.length
-                setInput(newValue)
+                setComposerInput(newValue)
                 setAtFilter(relativePath)
                 requestAnimationFrame(() => {
                   textareaRef.current?.focus()
                   textareaRef.current?.setSelectionRange(newCursorPos, newCursorPos)
                 })
               }}
-              onSelect={(path, name) => {
+              onSelect={(path, name, isDirectory) => {
                 if (atCursorPos >= 0) {
                   const referenceName = name.split('/').filter(Boolean).pop() ?? name
                   const tokenEnd = atCursorPos + 1 + atFilter.length
@@ -667,10 +963,11 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                       kind: 'file',
                       path,
                       absolutePath: path,
-                      name: referenceName,
+                      name: isDirectory ? `${referenceName}/` : referenceName,
+                      isDirectory,
                     })
                   }
-                  setInput(newValue)
+                  setComposerInput(newValue)
                   setFileSearchOpen(false)
                   setAtFilter('')
                   setAtCursorPos(-1)
@@ -688,7 +985,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
               <LocalSlashCommandPanel
                 command={localSlashPanel}
                 sessionId={activeTabId ?? undefined}
-                cwd={resolvedWorkDir}
+                cwd={activeLaunchWorkDir || resolvedWorkDir}
                 commands={allSlashCommands}
                 onClose={() => setLocalSlashPanel(null)}
               />
@@ -713,8 +1010,15 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                         : 'hover:bg-[var(--color-surface-hover)]'
                     }`}
                   >
-                    <span className="shrink-0 text-sm font-semibold text-[var(--color-text-primary)]">
-                      /{command.name}
+                    <span className="flex min-w-0 max-w-[52%] shrink-0 items-baseline gap-1.5">
+                      <span className="shrink-0 text-sm font-semibold text-[var(--color-text-primary)]">
+                        /{command.name}
+                      </span>
+                      {command.argumentHint ? (
+                        <span className="min-w-0 truncate font-mono text-[11px] text-[var(--color-text-tertiary)]">
+                          {command.argumentHint}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-text-tertiary)]">
                       {command.description}
@@ -722,14 +1026,16 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                   </button>
                 ))}
               </div>
-              <div className="flex items-center gap-1.5 border-t border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-text-tertiary)]">
-                <kbd className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Up/Down</kbd>
-                <span>{t('chat.navigate')}</span>
-                <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Enter</kbd>
-                <span>{t('chat.select')}</span>
-                <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Esc</kbd>
-                <span>{t('chat.dismiss')}</span>
-              </div>
+              {!isMobileComposer ? (
+                <div className="flex items-center gap-1.5 border-t border-[var(--color-border)] px-4 py-2 text-xs text-[var(--color-text-tertiary)]">
+                  <kbd className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Up/Down</kbd>
+                  <span>{t('chat.navigate')}</span>
+                  <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Enter</kbd>
+                  <span>{t('chat.select')}</span>
+                  <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1.5 py-0.5 font-mono text-[10px]">Esc</kbd>
+                  <span>{t('chat.dismiss')}</span>
+                </div>
+              ) : null}
             </div>
           )}
 
@@ -772,15 +1078,15 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
               disabled={isWorkspaceMissing}
               rows={1}
               className={`w-full resize-none bg-transparent text-sm leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] disabled:opacity-50 ${
-                compact ? 'py-1.5 pb-11' : 'py-2 pb-12'
+                useCompactControls ? 'py-1.5' : 'py-2'
               }`}
             />
           )}
 
-          <div className={isHeroComposer
+          <div data-testid="chat-input-toolbar" className={isHeroComposer
             ? 'flex items-center justify-between border-t border-[var(--color-border-separator)] pt-3'
-            : `absolute bottom-0 left-0 right-0 flex items-center justify-between border-t border-[var(--color-border-separator)] ${
-              compact ? 'gap-2 px-2.5 py-2' : 'px-3 py-3'
+            : `mt-2 flex items-center justify-between border-t border-[var(--color-border-separator)] ${
+              useCompactControls ? '-mx-3 -mb-3 gap-2 px-2.5 py-2' : '-mx-4 -mb-4 px-3 py-3'
             }`}>
             <div className="flex min-w-0 items-center gap-2">
               {!isMemberSession && (
@@ -789,18 +1095,15 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                     <button
                       onClick={() => setPlusMenuOpen((value) => !value)}
                       aria-label="Open composer tools"
-                      className="rounded-[var(--radius-md)] p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+                      className={`text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] ${isMobileComposer ? 'inline-flex h-11 w-11 items-center justify-center rounded-xl' : 'rounded-[var(--radius-md)] p-1.5'}`}
                     >
                       <span className="material-symbols-outlined text-[18px]">add</span>
                     </button>
 
                     {plusMenuOpen && (
-                      <div className="absolute bottom-full left-0 z-50 mb-2 w-[240px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1 shadow-[var(--shadow-dropdown)]">
+                      <div className={`absolute bottom-full left-0 z-50 mb-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1 shadow-[var(--shadow-dropdown)] ${isMobileComposer ? 'w-[min(240px,calc(100vw-32px))]' : 'w-[240px]'}`}>
                         <button
-                          onClick={() => {
-                            fileInputRef.current?.click()
-                            setPlusMenuOpen(false)
-                          }}
+                          onClick={openAttachmentPicker}
                           className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
                         >
                           <span className="material-symbols-outlined text-[18px] text-[var(--color-text-secondary)]">attach_file</span>
@@ -817,7 +1120,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                     )}
                   </div>
 
-                  <PermissionModeSelector compact={compact} />
+                  <PermissionModeSelector compact={useCompactControls} />
                 </>
               )}
             </div>
@@ -830,26 +1133,27 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                   messageCount={messageCount}
                   runtimeSelectionKey={runtimeSelectionKey}
                   fallbackModelLabel={runtimeModelLabel}
-                  compact={compact}
+                  compact={useCompactControls}
                 />
               )}
               {!isMemberSession && activeTabId && (
-                <ModelSelector runtimeKey={activeTabId} disabled={isActive} compact={compact} />
+                <ModelSelector runtimeKey={activeTabId} disabled={isActive} compact={useCompactControls} />
               )}
               <button
                 onClick={!isMemberSession && isActive ? () => stopGeneration(activeTabId!) : handleSubmit}
                 disabled={!isMemberSession && isActive ? false : !canSubmit}
+                aria-label={!isMemberSession && isActive ? t('common.stop') : isMemberSession ? t('common.send') : t('common.run')}
                 title={
                   !isMemberSession && isActive
                     ? t('chat.stopTitle')
-                    : compact
+                    : iconOnlyAction
                       ? isMemberSession
                         ? t('common.send')
                         : t('common.run')
                       : undefined
                 }
-                className={`flex items-center justify-center gap-1 rounded-lg text-xs font-semibold transition-all hover:brightness-105 disabled:opacity-30 ${
-                  compact ? 'h-8 w-8 px-0 py-0' : 'w-[112px] px-3 py-1.5'
+                className={`flex shrink-0 items-center justify-center gap-1 rounded-lg text-xs font-semibold transition-all hover:brightness-105 disabled:opacity-30 ${
+                  iconOnlyAction ? `${isMobileComposer ? 'h-11 w-11 rounded-xl px-0 py-0' : 'h-8 w-8 px-0 py-0'}` : 'w-[112px] px-3 py-1.5'
                 } ${
                   !isMemberSession && isActive
                     ? 'bg-[var(--color-error-container)] text-[var(--color-on-error-container)]'
@@ -859,39 +1163,53 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
                 <span className="material-symbols-outlined text-[14px]">
                   {!isMemberSession && isActive ? 'stop' : 'arrow_forward'}
                 </span>
-                {!compact && (!isMemberSession && isActive ? t('common.stop') : isMemberSession ? t('common.send') : t('common.run'))}
+                {!iconOnlyAction && (!isMemberSession && isActive ? t('common.stop') : isMemberSession ? t('common.send') : t('common.run'))}
               </button>
             </div>
           </div>
+
+          {embedLaunchControlsInHero && (
+            <div className="-mx-4 -mb-4 mt-3">
+              <RepositoryLaunchControls
+                workDir={activeLaunchWorkDir}
+                onWorkDirChange={handleLaunchWorkDirChange}
+                branch={launchBranch}
+                onBranchChange={setLaunchBranch}
+                useWorktree={launchUseWorktree}
+                onUseWorktreeChange={setLaunchUseWorktree}
+                onLaunchReadyChange={setLaunchReady}
+                disabled={isActive || launchTransitioning}
+                placement="composer"
+              />
+            </div>
+          )}
         </div>
 
         <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
 
-        {!isMemberSession && (
-          <div className={compact ? 'mt-2 flex min-w-0 justify-center px-1' : 'mt-3 px-1'}>
-            {hasMessages ? (
+        {!isMemberSession && !embedLaunchControlsInHero && (
+          <div className={useCompactControls ? 'mt-2 flex min-w-0 px-1' : 'mt-3 px-1'}>
+            {messageCount > 0 ? (
               <ProjectContextChip
                 workDir={resolvedWorkDir}
                 repoName={gitInfo?.repoName || null}
                 branch={gitInfo?.branch || null}
-                compact={compact}
+                sourceWorkDir={gitInfo?.worktree?.sourceWorkDir || null}
+                isWorktree={!!gitInfo?.worktree?.enabled}
+                worktreeSlug={gitInfo?.worktree?.slug || null}
+                worktreePath={gitInfo?.worktree?.path || gitInfo?.worktree?.plannedPath || null}
+                compact={useCompactControls}
               />
             ) : (
-              <DirectoryPicker
-                value={resolvedWorkDir || ''}
-                onChange={async (newWorkDir) => {
-                  if (!activeTabId) return
-                  const oldId = activeTabId
-                  const { deleteSession, createSession } = useSessionStore.getState()
-                  const { replaceTabSession } = useTabStore.getState()
-                  const { disconnectSession, connectToSession } = useChatStore.getState()
-                  const newId = await createSession(newWorkDir)
-                  useSessionRuntimeStore.getState().moveSelection(oldId, newId)
-                  disconnectSession(oldId)
-                  replaceTabSession(oldId, newId)
-                  connectToSession(newId)
-                  deleteSession(oldId).catch(() => {})
-                }}
+              <RepositoryLaunchControls
+                workDir={activeLaunchWorkDir}
+                onWorkDirChange={handleLaunchWorkDirChange}
+                branch={launchBranch}
+                onBranchChange={setLaunchBranch}
+                useWorktree={launchUseWorktree}
+                onUseWorktreeChange={setLaunchUseWorktree}
+                onLaunchReadyChange={setLaunchReady}
+                disabled={isActive || launchTransitioning}
               />
             )}
           </div>

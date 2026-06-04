@@ -1,4 +1,5 @@
-import { isTauriRuntime } from '../lib/desktopRuntime'
+import { isDesktopRuntime } from '../lib/desktopRuntime'
+import { getDesktopHost } from '../lib/desktopHost'
 
 export type GitReviewFile = {
   path: string
@@ -19,15 +20,14 @@ export type GitReviewSnapshot = {
 }
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (!isTauriRuntime()) {
+  if (!isDesktopRuntime()) {
     throw new Error('Review changes is available in the desktop app runtime.')
   }
-  const api = await import(/* @vite-ignore */ '@tauri-apps/api/core')
-  return api.invoke<T>(command, args)
+  return getDesktopHost().commands.invoke<T>(command, args)
 }
 
 export const gitReviewApi = {
-  isAvailable: isTauriRuntime,
+  isAvailable: isDesktopRuntime,
 
   snapshot(cwd?: string | null) {
     return invoke<GitReviewSnapshot>('git_review_snapshot', { cwd: cwd || null })

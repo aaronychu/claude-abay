@@ -27,10 +27,7 @@ import { registerEscHotkey } from './escHotkey.js';
 import { getChicagoCoordinateMode } from './gates.js';
 import { getComputerUseHostAdapter } from './hostAdapter.js';
 import { getComputerUseMCPRenderingOverrides } from './toolRendering.js';
-import { resolveStoredComputerUseConfig } from './preauthorizedConfig.js';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { loadStoredComputerUseConfig } from './preauthorizedConfig.js';
 type CallOverride = Pick<Tool, 'call'>['call'];
 type Binding = {
   ctx: ComputerUseSessionContext;
@@ -52,8 +49,7 @@ type Binding = {
  */
 let binding: Binding | undefined;
 let currentToolUseContext: ToolUseContext | undefined;
-const desktopServerUrl =
-  process.env.CLAUDE_ABAY_DESKTOP_SERVER_URL ?? process.env.CC_HAHA_DESKTOP_SERVER_URL;
+const desktopServerUrl = process.env.CLAUDE_ABAY_DESKTOP_SERVER_URL ?? process.env.CC_HAHA_DESKTOP_SERVER_URL;
 function tuc(): ToolUseContext {
   // Safe: `binding` is only populated when `currentToolUseContext` is set.
   // Called only from within `ctx` callbacks, which only fire during dispatch.
@@ -271,30 +267,11 @@ async function runDesktopPermissionDialog(
  * immediately — no runtime permission dialog needed.
  */
 async function loadPreAuthorizedApps(): Promise<void> {
-  let config:
-    | {
-        authorizedApps?: { bundleId: string; displayName: string }[]
-        grantFlags?: { clipboardRead?: boolean; clipboardWrite?: boolean; systemKeyCombos?: boolean }
-      }
-    | undefined
-
-  try {
-    const configPath = join(
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
-      'claude-abay',
-      'computer-use-config.json',
-    )
-    const raw = await readFile(configPath, 'utf8')
-    config = JSON.parse(raw) as typeof config
-  } catch {
-    // Config doesn't exist yet — still honor desktop defaults for grant flags.
-  }
-
   if (!currentToolUseContext) {
     return
   }
 
-  const resolved = resolveStoredComputerUseConfig(config)
+  const resolved = await loadStoredComputerUseConfig()
   const apps = resolved.authorizedApps.map(a => ({
     bundleId: a.bundleId,
     displayName: a.displayName,

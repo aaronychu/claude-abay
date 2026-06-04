@@ -83,7 +83,10 @@ describe('provider presets API', () => {
     expect(deepseek?.defaultModels.haiku).toBe('deepseek-v4-flash')
     expect(deepseek?.defaultModels.sonnet).toBe('deepseek-v4-pro')
     expect(deepseek?.defaultModels.opus).toBe('deepseek-v4-pro')
-    expect(deepseek?.defaultEnv?.CC_HAHA_SEND_DISABLED_THINKING).toBe('1')
+    expect(deepseek?.defaultEnv?.CC_HAHA_SEND_DISABLED_THINKING).toBeUndefined()
+    expect(deepseek?.defaultEnv?.ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES).toBe(
+      'thinking,effort,adaptive_thinking,max_effort',
+    )
     expect(zhipu?.authStrategy).toBe('auth_token')
     expect(zhipu?.defaultModels.main).toBe('glm-5.1')
     expect(zhipu?.defaultModels.haiku).toBe('glm-4.5-air')
@@ -94,8 +97,8 @@ describe('provider presets API', () => {
     expect(kimi?.defaultModels.main).toBe('kimi-k2.6')
     expect(kimi?.defaultEnv?.CC_HAHA_SEND_DISABLED_THINKING).toBe('1')
     expect(minimax?.authStrategy).toBe('auth_token')
-    expect(minimax?.defaultModels.main).toBe('MiniMax-M2.7')
-    expect(minimax?.modelContextWindows?.['MiniMax-M2.7']).toBe(204800)
+    expect(minimax?.defaultModels.main).toBe('MiniMax-M3')
+    expect(minimax?.modelContextWindows?.['MiniMax-M3']).toBe(1000000)
     expect(jiekouai?.baseUrl).toBe('https://api.jiekou.ai/anthropic')
     expect(jiekouai?.authStrategy).toBe('auth_token')
     expect(jiekouai?.defaultModels.main).toBe('claude-sonnet-4-6')
@@ -191,5 +194,14 @@ describe('provider presets API', () => {
 
     const updatedRaw = await fs.readFile(path.join(tmpDir, 'claude-abay', 'settings.json'), 'utf-8')
     expect(JSON.parse(updatedRaw)).toEqual(updateBody)
+  })
+
+  test('provider presets carry docs-backed context windows for current coding models', () => {
+    const byId = new Map(PROVIDER_PRESETS.map((preset) => [preset.id, preset]))
+
+    for (const id of ['deepseek', 'zhipuglm', 'kimi', 'minimax']) {
+      const preset = byId.get(id)!
+      expect(preset.modelContextWindows?.[preset.defaultModels.main]).toBeGreaterThan(0)
+    }
   })
 })

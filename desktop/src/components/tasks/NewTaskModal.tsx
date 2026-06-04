@@ -9,7 +9,6 @@ import { PromptEditor } from './PromptEditor'
 import { DayOfWeekPicker } from './DayOfWeekPicker'
 import { useTranslation } from '../../i18n'
 import { describeCron, isValidCron, parseCron, type FrequencyKey } from '../../lib/cronDescribe'
-import type { PermissionMode } from '../../types/settings'
 import type { CronTask } from '../../types/task'
 
 type NotificationChannel = 'desktop' | 'telegram' | 'feishu'
@@ -93,7 +92,7 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
   const [frequency, setFrequency] = useState<FrequencyKey>(parsed?.frequency || 'daily')
   const [time, setTime] = useState(parsed?.time || '09:00')
   const [model, setModel] = useState(editTask?.model || '')
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>((editTask?.permissionMode as PermissionMode) || 'default')
+  const [providerId, setProviderId] = useState<string | null | undefined>(editTask?.providerId)
   const [folderPath, setFolderPath] = useState(editTask?.folderPath || defaultWorkDir)
   const [useWorktree, setUseWorktree] = useState(editTask?.useWorktree || false)
   const [notifyEnabled, setNotifyEnabled] = useState(editTask?.notification?.enabled || false)
@@ -132,7 +131,8 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
         cron: cronValue,
         prompt: prompt.trim(),
         model: model || undefined,
-        permissionMode: permissionMode !== 'default' ? permissionMode : undefined,
+        providerId,
+        permissionMode: 'bypassPermissions',
         folderPath: folderPath.trim() || undefined,
         useWorktree: useWorktree || undefined,
         notification: notifyEnabled && notifyChannels.length > 0
@@ -198,10 +198,10 @@ export function NewTaskModal({ open, onClose, editTask }: Props) {
           value={prompt}
           onChange={setPrompt}
           placeholder={t('newTask.promptPlaceholder')}
-          permissionMode={permissionMode}
-          onPermissionModeChange={setPermissionMode}
           modelId={model}
           onModelChange={setModel}
+          providerId={providerId}
+          onProviderIdChange={setProviderId}
           folderPath={folderPath}
           onFolderPathChange={setFolderPath}
           useWorktree={useWorktree}

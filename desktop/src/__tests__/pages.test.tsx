@@ -1,5 +1,5 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import '@testing-library/jest-dom'
 
@@ -11,6 +11,12 @@ import { useUIStore } from '../stores/uiStore'
 vi.mock('../api/skills', () => ({
   skillsApi: {
     list: vi.fn(async () => ({ skills: [] })),
+  },
+}))
+
+vi.mock('../api/providers', () => ({
+  providersApi: {
+    list: vi.fn(async () => ({ providers: [], activeId: null })),
   },
 }))
 
@@ -80,13 +86,35 @@ import { ContextUsageIndicator } from '../components/chat/ContextUsageIndicator'
 import { useChatStore } from '../stores/chatStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSessionStore } from '../stores/sessionStore'
+import { useProviderStore } from '../stores/providerStore'
 import { useSessionRuntimeStore } from '../stores/sessionRuntimeStore'
 import { useTabStore } from '../stores/tabStore'
 
 beforeEach(() => {
   useSettingsStore.setState({ locale: 'en' })
+  useProviderStore.setState({
+    providers: [],
+    activeId: null,
+    hasLoadedProviders: true,
+    isLoading: false,
+  })
   useSessionRuntimeStore.setState({ selections: {} })
 })
+
+afterEach(async () => {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+  cleanup()
+})
+
+function resetPageStores() {
+  cleanup()
+  useTabStore.setState({ tabs: [], activeTabId: null })
+  useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
+  useChatStore.setState({ sessions: {} })
+}
 
 /**
  * Core rendering tests: content-only pages must render without crashing
@@ -131,8 +159,29 @@ describe('Content-only pages render without errors', () => {
     expect(screen.queryByText('/internal-only')).not.toBeInTheDocument()
   })
 
-  it('EmptySession renders mascot and composer', () => {
-    const { container } = render(<EmptySession />)
+  it('EmptySession shows /goal as one command with argument hints, not pseudo subcommands', async () => {
+    vi.mocked(skillsApi.list).mockResolvedValueOnce({ skills: [] })
+
+    render(<EmptySession />)
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '/goal', selectionStart: 5 },
+    })
+
+    expect(await screen.findAllByText('/goal')).toHaveLength(2)
+    expect(screen.getByText('[<condition> | clear]')).toBeInTheDocument()
+    expect(screen.getByText('Set a completion goal')).toBeInTheDocument()
+    expect(screen.queryByText('/goal status')).not.toBeInTheDocument()
+    expect(screen.queryByText('/goal --tokens')).not.toBeInTheDocument()
+  })
+
+  it('EmptySession renders mascot and composer', async () => {
+    let container!: HTMLElement
+    await act(async () => {
+      container = render(<EmptySession />).container
+      await Promise.resolve()
+      await Promise.resolve()
+    })
     expect(container.querySelector('textarea')).toBeInTheDocument()
     expect(container.innerHTML).toContain('New session')
     expect(container.innerHTML).toContain('Ask anything')
@@ -161,9 +210,34 @@ describe('Content-only pages render without errors', () => {
     expect(html).not.toContain('animate-spin')
   })
 
-  it('EmptySession plus menu exposes uploads and slash commands before chat starts', () => {
-    render(<EmptySession />)
-    fireEvent.click(screen.getByRole('button', { name: 'Open composer tools' }))
+  it('ContextUsageIndicator opens tap details in compact mobile mode', async () => {
+    render(
+      <ContextUsageIndicator
+        chatState="idle"
+        messageCount={0}
+        fallbackModelLabel="kimi-k2.6"
+        draft
+        compact
+      />,
+    )
+
+    fireEvent.click(screen.getByLabelText('Context usage not calculated'))
+
+    expect(await screen.findByRole('button', { name: 'Close' })).toBeInTheDocument()
+    expect(screen.getAllByText('kimi-k2.6')).toHaveLength(2)
+    expect(screen.getAllByText('Context usage will be calculated after the session starts.')).toHaveLength(2)
+  })
+
+  it('EmptySession plus menu exposes uploads and slash commands before chat starts', async () => {
+    await act(async () => {
+      render(<EmptySession />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Open composer tools' }))
+      await Promise.resolve()
+    })
     expect(screen.getByText('Add files or photos')).toBeInTheDocument()
     expect(screen.getByText('Slash commands')).toBeInTheDocument()
   })
@@ -203,8 +277,7 @@ describe('Content-only pages render without errors', () => {
     expect(textarea).toHaveAttribute('rows', '2')
     expect(container.innerHTML).not.toContain('Preview')
     // Cleanup
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession keeps the compact composer once messages exist', () => {
@@ -258,9 +331,7 @@ describe('Content-only pages render without errors', () => {
     const textarea = screen.getByPlaceholderText('Ask Claude to edit, debug or explain...')
     expect(textarea).toHaveAttribute('rows', '1')
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession shows a single primary action button while a turn is active', () => {
@@ -291,7 +362,7 @@ describe('Content-only pages render without errors', () => {
 
     expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^run$/i })).not.toBeInTheDocument()
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession opens a local /mcp panel and clicking an item routes to settings', async () => {
@@ -368,9 +439,7 @@ describe('Content-only pages render without errors', () => {
     expect(useTabStore.getState().activeTabId).toBe('__settings__')
     expect(useUIStore.getState().pendingSettingsTab).toBe('mcp')
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession opens a local /skills panel from the fallback slash commands', async () => {
@@ -438,9 +507,7 @@ describe('Content-only pages render without errors', () => {
     expect(await screen.findByText('Available skills')).toBeInTheDocument()
     expect(screen.getByText('/lark-mail')).toBeInTheDocument()
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession routes /plugin to Settings > Plugins instead of sending a chat message', () => {
@@ -496,9 +563,7 @@ describe('Content-only pages render without errors', () => {
     expect(useTabStore.getState().activeTabId).toBe('__settings__')
     expect(useUIStore.getState().pendingSettingsTab).toBe('plugins')
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession routes /help to the local command panel', () => {
@@ -560,11 +625,9 @@ describe('Content-only pages render without errors', () => {
     expect(screen.getByText('Slash commands')).toBeInTheDocument()
     expect(screen.getByText('/clear')).toBeInTheDocument()
     expect(screen.getByText('/cost')).toBeInTheDocument()
-    expect(screen.getByText('13 more commands available. Type / to search the full command list.')).toBeInTheDocument()
+    expect(screen.getByText('15 more commands available. Type / to search the full command list.')).toBeInTheDocument()
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession /status inspector uses theme tokens instead of fixed light colors', async () => {
@@ -623,9 +686,7 @@ describe('Content-only pages render without errors', () => {
     expect(container.innerHTML).not.toContain('bg-[#f4f2ed]')
     expect(container.innerHTML).not.toContain('border-[#d8b3a8]')
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession shows live context usage near the composer', async () => {
@@ -706,9 +767,7 @@ describe('Content-only pages render without errors', () => {
       timeout: 20_000,
     })
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession keeps a stable context placeholder while context usage loads', async () => {
@@ -760,9 +819,7 @@ describe('Content-only pages render without errors', () => {
     expect(indicator).toHaveTextContent('--')
     expect(indicator).toHaveClass('h-8')
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession treats an empty idle session without a running CLI as pending context', async () => {
@@ -828,9 +885,7 @@ describe('Content-only pages render without errors', () => {
     expect(screen.getByText('Context usage will be calculated after the session starts.')).toBeInTheDocument()
     expect(screen.queryByText('CLI session is not running')).not.toBeInTheDocument()
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession shows initial context usage for an empty live session', async () => {
@@ -909,9 +964,7 @@ describe('Content-only pages render without errors', () => {
     expect(screen.getAllByText('kimi-k2.6').length).toBeGreaterThan(0)
     expect(screen.queryByText('Context usage will be calculated after the session starts.')).not.toBeInTheDocument()
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession shows context estimate during compaction or reconnect fallback', async () => {
@@ -995,9 +1048,7 @@ describe('Content-only pages render without errors', () => {
     expect(screen.getByText('Estimate')).toBeInTheDocument()
     expect(screen.queryByText('Autocompact buffer')).not.toBeInTheDocument()
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
   })
 
   it('ActiveSession keeps selected runtime model visible when context is unavailable', async () => {
@@ -1064,9 +1115,7 @@ describe('Content-only pages render without errors', () => {
     expect(screen.getAllByText('kimi-k2.6').length).toBeGreaterThan(0)
     expect(screen.queryByText('Unknown model')).not.toBeInTheDocument()
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
     useSessionRuntimeStore.setState({ selections: {} })
   })
 
@@ -1162,9 +1211,11 @@ describe('Content-only pages render without errors', () => {
 
     expect(await screen.findByLabelText('Context usage 10%')).toBeInTheDocument()
 
-    useSessionRuntimeStore.getState().setSelection(SESSION_ID, {
-      providerId: 'zhipu-provider',
-      modelId: 'glm-4.5-air',
+    act(() => {
+      useSessionRuntimeStore.getState().setSelection(SESSION_ID, {
+        providerId: 'zhipu-provider',
+        modelId: 'glm-4.5-air',
+      })
     })
 
     expect(await screen.findByLabelText('Context usage 20%')).toBeInTheDocument()
@@ -1173,9 +1224,7 @@ describe('Content-only pages render without errors', () => {
         .toBeGreaterThanOrEqual(2)
     })
 
-    useTabStore.setState({ tabs: [], activeTabId: null })
-    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
-    useChatStore.setState({ sessions: {} })
+    resetPageStores()
     useSessionRuntimeStore.setState({ selections: {} })
   })
 
@@ -1222,11 +1271,16 @@ describe('Chat attachments', () => {
 
 describe('AppShell layout renders chrome', () => {
   it('AppShell renders sidebar and session shell', () => {
+    useSessionStore.setState({
+      fetchSessions: vi.fn(async () => {}),
+    } as Partial<ReturnType<typeof useSessionStore.getState>>)
+
     const { container } = render(<Sidebar />)
     expect(container.querySelector('aside')).toBeInTheDocument()
     expect(container.innerHTML).toContain('New session')
     expect(container.innerHTML).toContain('Scheduled')
-    expect(container.innerHTML).toContain('All projects')
+    expect(container.innerHTML).toContain('Search sessions')
+    expect(container.innerHTML).toContain('Settings')
   })
 })
 

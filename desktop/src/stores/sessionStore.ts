@@ -1,55 +1,98 @@
 import { create } from 'zustand'
-import { sessionsApi } from '../api/sessions'
+import {
+  sessionsApi,
+  type BatchDeleteSessionsResponse,
+  type BranchSessionResponse,
+  type CreateSessionRepositoryOptions,
+} from '../api/sessions'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
+import { useTabStore } from './tabStore'
 import type { SessionListItem } from '../types/session'
+import type { PermissionMode } from '../types/settings'
+import { isPlaceholderSessionTitle } from '../lib/sessionTitle'
+
+type CreateSessionOptions = {
+  repository?: CreateSessionRepositoryOptions
+  permissionMode?: PermissionMode
+}
+
+type BranchSessionResult = Pick<BranchSessionResponse, 'sessionId' | 'title' | 'workDir'>
 
 type SessionStore = {
   sessions: SessionListItem[]
   activeSessionId: string | null
   isLoading: boolean
   error: string | null
-  selectedProjects: string[]
-  availableProjects: string[]
+  isBatchMode: boolean
+  selectedSessionIds: Set<string>
 
   fetchSessions: (project?: string) => Promise<void>
-  createSession: (workDir?: string) => Promise<string>
+  createSession: (workDir?: string, options?: CreateSessionOptions) => Promise<string>
+  branchSession: (
+    sourceSessionId: string,
+    targetMessageId: string,
+    options?: { title?: string },
+  ) => Promise<BranchSessionResult>
   deleteSession: (id: string) => Promise<void>
+  deleteSessions: (ids: string[]) => Promise<BatchDeleteSessionsResponse>
+  enterBatchMode: () => void
+  exitBatchMode: () => void
+  toggleSessionSelected: (id: string) => void
+  selectSessions: (ids: string[]) => void
+  deselectSessions: (ids: string[]) => void
+  clearSessionSelection: () => void
   renameSession: (id: string, title: string) => Promise<void>
   updateSessionTitle: (id: string, title: string) => void
+  updateSessionPermissionMode: (id: string, mode: PermissionMode) => void
   setActiveSession: (id: string | null) => void
-  setSelectedProjects: (projects: string[]) => void
 }
+
+let fetchSessionsRequestId = 0
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   isLoading: false,
   error: null,
-  selectedProjects: [],
-  availableProjects: [],
+  isBatchMode: false,
+  selectedSessionIds: new Set(),
 
   fetchSessions: async (project?: string) => {
+    const requestId = ++fetchSessionsRequestId
     set({ isLoading: true, error: null })
     try {
       const { sessions: raw } = await sessionsApi.list({ project, limit: 100 })
-      // Deduplicate by session ID — keep the most recently modified entry
-      const byId = new Map<string, SessionListItem>()
-      for (const s of raw) {
-        const existing = byId.get(s.id)
-        if (!existing || new Date(s.modifiedAt) > new Date(existing.modifiedAt)) {
-          byId.set(s.id, s)
+      if (requestId !== fetchSessionsRequestId) return
+      let syncedSessions: SessionListItem[] = []
+      set((state) => {
+        const currentById = new Map(state.sessions.map((session) => [session.id, session]))
+        // Deduplicate by session ID - keep the most recently modified entry.
+        const byId = new Map<string, SessionListItem>()
+        for (const s of raw) {
+          const current = currentById.get(s.id)
+          const candidate = preserveLocalTitle(current, s)
+          const existing = byId.get(s.id)
+          if (!existing || new Date(candidate.modifiedAt) > new Date(existing.modifiedAt)) {
+            byId.set(s.id, candidate)
+          }
         }
-      }
-      const sessions = [...byId.values()]
-      const availableProjects = [...new Set(sessions.map((s) => s.projectPath).filter(Boolean))].sort()
-      set({ sessions, availableProjects, isLoading: false })
+        const sessions = [...byId.values()]
+        syncedSessions = sessions
+        return { sessions, isLoading: false }
+      })
+      syncOpenSessionTabTitles(syncedSessions)
     } catch (err) {
+      if (requestId !== fetchSessionsRequestId) return
       set({ error: (err as Error).message, isLoading: false })
     }
   },
 
-  createSession: async (workDir?: string) => {
-    const { sessionId: id } = await sessionsApi.create(workDir || undefined)
+  createSession: async (workDir?: string, options?: CreateSessionOptions) => {
+    const { sessionId: id, workDir: resolvedWorkDir } = await sessionsApi.create({
+      ...(workDir ? { workDir } : {}),
+      ...(options?.repository ? { repository: options.repository } : {}),
+      ...(options?.permissionMode ? { permissionMode: options.permissionMode } : {}),
+    })
     const now = new Date().toISOString()
     const optimisticSession: SessionListItem = {
       id,
@@ -58,8 +101,10 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       modifiedAt: now,
       messageCount: 0,
       projectPath: '',
-      workDir: workDir ?? null,
+      workDir: resolvedWorkDir ?? workDir ?? null,
+      projectRoot: resolvedWorkDir ?? workDir ?? null,
       workDirExists: true,
+      permissionMode: options?.permissionMode,
     }
 
     set((state) => ({
@@ -73,14 +118,89 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     return id
   },
 
+  branchSession: async (sourceSessionId, targetMessageId, options) => {
+    const result = await sessionsApi.branch(sourceSessionId, {
+      targetMessageId,
+      ...(options?.title ? { title: options.title } : {}),
+    })
+    const sourceSession = get().sessions.find((session) => session.id === sourceSessionId)
+    const now = new Date().toISOString()
+    const optimisticSession: SessionListItem = {
+      id: result.sessionId,
+      title: result.title || 'New Session',
+      createdAt: now,
+      modifiedAt: now,
+      messageCount: 0,
+      projectPath: sourceSession?.projectPath ?? '',
+      projectRoot: sourceSession?.projectRoot ?? sourceSession?.workDir ?? result.workDir ?? null,
+      workDir: result.workDir ?? sourceSession?.workDir ?? null,
+      workDirExists: true,
+    }
+
+    set((state) => ({
+      sessions: state.sessions.some((session) => session.id === result.sessionId)
+        ? state.sessions.map((session) =>
+            session.id === result.sessionId
+              ? { ...session, ...optimisticSession }
+              : session)
+        : [optimisticSession, ...state.sessions],
+      activeSessionId: result.sessionId,
+    }))
+
+    void get().fetchSessions()
+    return {
+      sessionId: result.sessionId,
+      title: result.title,
+      workDir: result.workDir,
+    }
+  },
+
   deleteSession: async (id: string) => {
     await sessionsApi.delete(id)
     useSessionRuntimeStore.getState().clearSelection(id)
     set((s) => ({
       sessions: s.sessions.filter((session) => session.id !== id),
       activeSessionId: s.activeSessionId === id ? null : s.activeSessionId,
+      selectedSessionIds: removeIdsFromSet(s.selectedSessionIds, [id]),
     }))
   },
+
+  deleteSessions: async (ids: string[]) => {
+    const sessionIds = [...new Set(ids)].filter(Boolean)
+    const result = await sessionsApi.batchDelete(sessionIds)
+    for (const id of result.successes) {
+      useSessionRuntimeStore.getState().clearSelection(id)
+    }
+    set((s) => ({
+      sessions: s.sessions.filter((session) => !result.successes.includes(session.id)),
+      activeSessionId: s.activeSessionId && result.successes.includes(s.activeSessionId)
+        ? null
+        : s.activeSessionId,
+      selectedSessionIds: removeIdsFromSet(s.selectedSessionIds, result.successes),
+    }))
+    return result
+  },
+
+  enterBatchMode: () => set({ isBatchMode: true }),
+  exitBatchMode: () => set({ isBatchMode: false, selectedSessionIds: new Set() }),
+  toggleSessionSelected: (id) => set((s) => {
+    const selectedSessionIds = new Set(s.selectedSessionIds)
+    if (selectedSessionIds.has(id)) {
+      selectedSessionIds.delete(id)
+    } else {
+      selectedSessionIds.add(id)
+    }
+    return { selectedSessionIds }
+  }),
+  selectSessions: (ids) => set((s) => {
+    const selectedSessionIds = new Set(s.selectedSessionIds)
+    for (const id of ids) selectedSessionIds.add(id)
+    return { selectedSessionIds }
+  }),
+  deselectSessions: (ids) => set((s) => ({
+    selectedSessionIds: removeIdsFromSet(s.selectedSessionIds, ids),
+  })),
+  clearSessionSelection: () => set({ selectedSessionIds: new Set() }),
 
   renameSession: async (id: string, title: string) => {
     await sessionsApi.rename(id, title)
@@ -99,6 +219,43 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }))
   },
 
+  updateSessionPermissionMode: (id, mode) => {
+    set((s) => ({
+      sessions: s.sessions.map((session) =>
+        session.id === id ? { ...session, permissionMode: mode } : session,
+      ),
+    }))
+  },
+
   setActiveSession: (id) => set({ activeSessionId: id }),
-  setSelectedProjects: (projects) => set({ selectedProjects: projects }),
 }))
+
+function removeIdsFromSet(selected: Set<string>, ids: string[]): Set<string> {
+  if (ids.length === 0) return selected
+  const next = new Set(selected)
+  for (const id of ids) next.delete(id)
+  return next
+}
+
+function preserveLocalTitle(
+  current: SessionListItem | undefined,
+  incoming: SessionListItem,
+): SessionListItem {
+  if (!current) return incoming
+  if (isPlaceholderSessionTitle(incoming.title) && !isPlaceholderSessionTitle(current.title)) {
+    return { ...incoming, title: current.title }
+  }
+  return incoming
+}
+
+function syncOpenSessionTabTitles(sessions: SessionListItem[]): void {
+  const titleById = new Map(sessions.map((session) => [session.id, session.title]))
+  const { tabs, updateTabTitle } = useTabStore.getState()
+  for (const tab of tabs) {
+    if (tab.type !== 'session') continue
+    const title = titleById.get(tab.sessionId)
+    if (title && title !== tab.title) {
+      updateTabTitle(tab.sessionId, title)
+    }
+  }
+}

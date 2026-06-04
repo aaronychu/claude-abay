@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
@@ -14,9 +14,15 @@ const diagnosticsApiMock = vi.hoisted(() => ({
   clear: vi.fn(),
 }))
 
+const doctorRepairMock = vi.hoisted(() => ({
+  runDoctorRepair: vi.fn(),
+}))
+
 vi.mock('../api/diagnostics', () => ({
   diagnosticsApi: diagnosticsApiMock,
 }))
+
+vi.mock('../lib/doctorRepair', () => doctorRepairMock)
 
 vi.mock('../stores/providerStore', () => ({
   useProviderStore: () => ({
@@ -84,6 +90,7 @@ vi.mock('../components/chat/CodeViewer', () => ({
 
 describe('Settings > Diagnostics tab', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     diagnosticsApiMock.getStatus.mockResolvedValue({
       logDir: '/tmp/claude/claude-abay/diagnostics',
       diagnosticsPath: '/tmp/claude/claude-abay/diagnostics/diagnostics.jsonl',
@@ -120,6 +127,17 @@ describe('Settings > Diagnostics tab', () => {
     })
     diagnosticsApiMock.openLogDir.mockResolvedValue({ ok: true })
     diagnosticsApiMock.clear.mockResolvedValue({ ok: true })
+    doctorRepairMock.runDoctorRepair.mockResolvedValue({
+      local: {
+        removedKeys: ['claude-abay-open-tabs', 'claude-abay-session-runtime'],
+        missingKeys: ['claude-abay-theme', 'claude-abay-locale', 'claude-abay.persistence.schemaVersion'],
+        failedKeys: [],
+      },
+      server: {
+        ok: true,
+      },
+      serverError: null,
+    })
 
     useSettingsStore.setState({ locale: 'en' })
     useUIStore.setState({ pendingSettingsTab: null, toasts: [] })
@@ -149,6 +167,36 @@ describe('Settings > Diagnostics tab', () => {
       expect(diagnosticsApiMock.exportBundle).toHaveBeenCalled()
     })
     expect(await screen.findByText('/tmp/claude/claude-abay/diagnostics/exports/claude-abay-diagnostics.tar.gz')).toBeInTheDocument()
+  })
+
+  it('asks with the shared confirm dialog before clearing diagnostics', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockImplementation(() => {
+      throw new Error('window.confirm should not be used')
+    })
+
+    try {
+      render(<Settings />)
+
+      fireEvent.click(screen.getByText('Diagnostics'))
+      fireEvent.click(await screen.findByRole('button', { name: /Clear Logs/i }))
+
+      const dialog = await screen.findByRole('dialog', { name: 'Clear Logs' })
+      expect(within(dialog).getByText('Clear all local diagnostic logs and exported bundles?')).toBeInTheDocument()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: /Cancel/i }))
+      expect(diagnosticsApiMock.clear).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByRole('button', { name: /Clear Logs/i }))
+      const confirmDialog = await screen.findByRole('dialog', { name: 'Clear Logs' })
+      fireEvent.click(within(confirmDialog).getByRole('button', { name: /Clear Logs/i }))
+
+      await waitFor(() => {
+        expect(diagnosticsApiMock.clear).toHaveBeenCalledTimes(1)
+      })
+      expect(confirmSpy).not.toHaveBeenCalled()
+    } finally {
+      confirmSpy.mockRestore()
+    }
   })
 
   it('copies the recent error summary with the legacy clipboard fallback', async () => {
@@ -189,5 +237,24 @@ describe('Settings > Diagnostics tab', () => {
         value: originalClipboard,
       })
     }
+  })
+
+  it('runs Doctor from Diagnostics without clearing unrelated desktop state', async () => {
+    window.localStorage.setItem('claude-abay-open-tabs', '{"activeTabId":"__settings__"}')
+    window.localStorage.setItem('claude-abay-theme', 'dark')
+    window.localStorage.setItem('claude-abay-chat-history', 'keep')
+
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('Diagnostics'))
+    fireEvent.click(await screen.findByRole('button', { name: /Run Doctor/i }))
+
+    await waitFor(() => {
+      expect(doctorRepairMock.runDoctorRepair).toHaveBeenCalled()
+    })
+
+    const toasts = useUIStore.getState().toasts
+    expect(toasts[toasts.length - 1]?.message).toContain('Doctor')
+    expect(window.localStorage.getItem('claude-abay-chat-history')).toBe('keep')
   })
 })

@@ -9,6 +9,9 @@ import QRCode from 'qrcode'
 
 type ImTab = 'feishu' | 'wechat' | 'dingtalk' | 'telegram'
 type ImPlatform = 'telegram' | 'feishu' | 'wechat' | 'dingtalk'
+type AdapterUnbindTarget = 'wechatAccount' | 'dingtalkBot'
+
+const FEISHU_CREATE_BOT_URL = 'https://open.feishu.cn/page/openclaw?form=multiAgent'
 
 export function AdapterSettings() {
   const t = useTranslation()
@@ -31,7 +34,7 @@ export function AdapterSettings() {
   const [activeIm, setActiveIm] = useState<ImTab>('feishu')
 
   // Server —— serverUrl 不再暴露在 UI 里（见下方 Server URL 注释），
-  // 桌面端用 Tauri env var 注入动态端口。
+  // 桌面端用 sidecar env var 注入动态端口。
   const [defaultProjectDir, setDefaultProjectDir] = useState('')
 
   // Telegram
@@ -80,6 +83,7 @@ export function AdapterSettings() {
   const [pairingCode, setPairingCode] = useState<string | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
   const [pendingUnbind, setPendingUnbind] = useState<{ platform: ImPlatform; userId: string | number } | null>(null)
+  const [pendingAdapterUnbind, setPendingAdapterUnbind] = useState<AdapterUnbindTarget | null>(null)
   const [isUnbinding, setIsUnbinding] = useState(false)
 
   useEffect(() => {
@@ -328,6 +332,7 @@ export function AdapterSettings() {
     } finally {
       setIsUnbindingWechatAccount(false)
       setIsWechatBinding(false)
+      setPendingAdapterUnbind(null)
     }
   }, [unbindWechatAccount, fetchConfig, t])
 
@@ -344,6 +349,7 @@ export function AdapterSettings() {
       setDtAuthError(err instanceof Error ? err.message : t('settings.adapters.dingtalkUnbindFailed'))
     } finally {
       setIsUnbindingDtBot(false)
+      setPendingAdapterUnbind(null)
     }
   }, [unbindDingtalkBot, fetchConfig, t])
 
@@ -375,6 +381,7 @@ export function AdapterSettings() {
   const pairingExpiry = config.pairing?.expiresAt
   const isPairingActive = pairingExpiry ? Date.now() < pairingExpiry : false
   const minutesLeft = pairingExpiry ? Math.max(0, Math.ceil((pairingExpiry - Date.now()) / 60000)) : 0
+  const hasSavedFeishuCredentials = Boolean(config.feishu?.appId && config.feishu?.appSecret)
 
   if (isLoading) {
     return (
@@ -461,7 +468,7 @@ export function AdapterSettings() {
         </div>
       </section>
 
-      {/* Server URL —— 之前是个手填字段，但桌面端 Tauri 启动 adapter sidecar
+      {/* Server URL —— 之前是个手填字段，但桌面端启动 adapter sidecar
           时已经把 server 的动态端口通过 ADAPTER_SERVER_URL env var 注进去了，
           loadConfig() 里 env 优先级高于这里的 file value，所以这个字段在桌面
           运行时完全不会被读到。用户也根本不知道该填什么端口（每次启动随机）。
@@ -505,6 +512,32 @@ export function AdapterSettings() {
 
         {activeIm === 'feishu' && (
           <div className="p-4 space-y-4">
+            {!hasSavedFeishuCredentials && (
+              <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 gap-3">
+                    <span className="material-symbols-outlined mt-0.5 text-[20px] text-[var(--color-brand)]">smart_toy</span>
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.adapters.feishuCreateBotTitle')}</h4>
+                      <p className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">{t('settings.adapters.feishuCreateBotDesc')}</p>
+                      <ol className="mt-2 space-y-1 text-xs leading-5 text-[var(--color-text-secondary)]">
+                        <li>1. {t('settings.adapters.feishuCreateBotStepCreate')}</li>
+                        <li>2. {t('settings.adapters.feishuCreateBotStepFill')}</li>
+                      </ol>
+                    </div>
+                  </div>
+                  <a
+                    href={FEISHU_CREATE_BOT_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[var(--radius-md)] bg-[image:var(--gradient-btn-primary)] px-3 text-xs font-medium text-[var(--color-btn-primary-fg)] shadow-[var(--shadow-button-primary)] transition-colors hover:bg-[image:var(--gradient-btn-primary-hover)] hover:brightness-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)]"
+                  >
+                    {t('settings.adapters.feishuCreateBotAction')}
+                    <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+                  </a>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <Input
                 label={t('settings.adapters.appId')}
@@ -577,7 +610,7 @@ export function AdapterSettings() {
                     {config.wechat?.accountId ? t('settings.adapters.wechatRebind') : t('settings.adapters.wechatBind')}
                   </Button>
                   {config.wechat?.accountId && (
-                    <Button onClick={handleUnbindWechatAccount} loading={isUnbindingWechatAccount} size="sm" variant="danger">
+                    <Button onClick={() => setPendingAdapterUnbind('wechatAccount')} loading={isUnbindingWechatAccount} size="sm" variant="danger">
                       {t('settings.adapters.wechatUnbindAccount')}
                     </Button>
                   )}
@@ -627,7 +660,7 @@ export function AdapterSettings() {
                     {t('settings.adapters.dingtalkStartAuth')}
                   </Button>
                   {(config.dingtalk?.clientId || dtClientId) && (
-                    <Button onClick={handleUnbindDingtalkBot} loading={isUnbindingDtBot} size="sm" variant="danger">
+                    <Button onClick={() => setPendingAdapterUnbind('dingtalkBot')} loading={isUnbindingDtBot} size="sm" variant="danger">
                       {t('settings.adapters.dingtalkUnbindBot')}
                     </Button>
                   )}
@@ -761,6 +794,26 @@ export function AdapterSettings() {
         cancelLabel={t('common.cancel')}
         confirmVariant="danger"
         loading={isUnbinding}
+      />
+      <ConfirmDialog
+        open={pendingAdapterUnbind !== null}
+        onClose={() => {
+          if (isUnbindingWechatAccount || isUnbindingDtBot) return
+          setPendingAdapterUnbind(null)
+        }}
+        onConfirm={pendingAdapterUnbind === 'wechatAccount' ? handleUnbindWechatAccount : handleUnbindDingtalkBot}
+        title={pendingAdapterUnbind === 'wechatAccount'
+          ? t('settings.adapters.wechatUnbindAccount')
+          : t('settings.adapters.dingtalkUnbindBot')}
+        body={pendingAdapterUnbind === 'wechatAccount'
+          ? t('settings.adapters.wechatUnbindAccountConfirm')
+          : t('settings.adapters.dingtalkUnbindBotConfirm')}
+        confirmLabel={pendingAdapterUnbind === 'wechatAccount'
+          ? t('settings.adapters.wechatUnbindAccount')
+          : t('settings.adapters.dingtalkUnbindBot')}
+        cancelLabel={t('common.cancel')}
+        confirmVariant="danger"
+        loading={isUnbindingWechatAccount || isUnbindingDtBot}
       />
     </div>
   )

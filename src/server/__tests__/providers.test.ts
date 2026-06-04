@@ -8,6 +8,7 @@ import * as path from 'path'
 import * as os from 'os'
 import { ProviderService } from '../services/providerService.js'
 import { handleProvidersApi } from '../api/providers.js'
+import { handleProxyRequest } from '../proxy/handler.js'
 import type { CreateProviderInput } from '../types/provider.js'
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -94,6 +95,38 @@ describe('ProviderService', () => {
       expect(result).toEqual({ providers: [], activeId: null })
     })
 
+    test('should recover from a malformed providers index after an upgrade', async () => {
+      await fs.mkdir(path.join(tmpDir, 'claude-abay'), { recursive: true })
+      await fs.writeFile(path.join(tmpDir, 'claude-abay', 'providers.json'), '{not json', 'utf-8')
+
+      const svc = new ProviderService()
+      const result = await svc.listProviders()
+      const files = await fs.readdir(path.join(tmpDir, 'claude-abay'))
+
+      expect(result).toEqual({ providers: [], activeId: null })
+      expect(files.some((name) => name.startsWith('providers.json.invalid-'))).toBe(true)
+    })
+
+    test('should normalize a legacy activeProviderId field', async () => {
+      await fs.mkdir(path.join(tmpDir, 'claude-abay'), { recursive: true })
+      const provider = {
+        id: 'legacy-provider',
+        ...sampleInput({ name: 'Legacy Provider' }),
+      }
+      await fs.writeFile(
+        path.join(tmpDir, 'claude-abay', 'providers.json'),
+        JSON.stringify({ activeProviderId: provider.id, providers: [provider] }),
+        'utf-8',
+      )
+
+      const svc = new ProviderService()
+      const result = await svc.listProviders()
+
+      expect(result.activeId).toBe(provider.id)
+      expect(result.providers).toHaveLength(1)
+      expect(result.providers[0].name).toBe('Legacy Provider')
+    })
+
     test('should return all added providers', async () => {
       const svc = new ProviderService()
       await svc.addProvider(sampleInput({ name: 'Provider A' }))
@@ -121,6 +154,28 @@ describe('ProviderService', () => {
       expect(provider.models.main).toBe('model-main')
     })
 
+    test('should normalize empty model mappings to the main model when adding a provider', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput({
+        models: {
+          main: 'gpt-5.5',
+          haiku: '',
+          sonnet: '   ',
+          opus: '',
+        },
+      }))
+
+      expect(provider.models).toEqual({
+        main: 'gpt-5.5',
+        haiku: 'gpt-5.5',
+        sonnet: 'gpt-5.5',
+        opus: 'gpt-5.5',
+      })
+
+      const config = await readProvidersConfig()
+      expect((config.providers as Array<{ models: unknown }>)[0]?.models).toEqual(provider.models)
+    })
+
     test('new providers should not be auto-activated', async () => {
       const svc = new ProviderService()
       const provider = await svc.addProvider(sampleInput())
@@ -135,6 +190,63 @@ describe('ProviderService', () => {
       await svc.addProvider(sampleInput())
 
       await expect(fs.readFile(path.join(tmpDir, 'claude-abay', 'settings.json'), 'utf-8')).rejects.toThrow()
+    })
+
+    test('custom providers declare thinking and effort capability passthrough for user-defined models', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput({
+        models: {
+          main: 'deepseek-ai/DeepSeek-V4-Pro',
+          haiku: 'deepseek-ai/DeepSeek-V4-Pro',
+          sonnet: 'deepseek-ai/DeepSeek-V4-Pro',
+          opus: 'deepseek-ai/DeepSeek-V4-Pro',
+        },
+      }))
+
+      await svc.activateProvider(provider.id)
+
+      const settings = await readSettings()
+      const env = settings.env as Record<string, string>
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('deepseek-ai/DeepSeek-V4-Pro')
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES).toBe(
+        'thinking,effort,adaptive_thinking,max_effort',
+      )
+      expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES).toBe(
+        'thinking,effort,adaptive_thinking,max_effort',
+      )
+      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES).toBe(
+        'thinking,effort,adaptive_thinking,max_effort',
+      )
+    })
+
+    test('DeepSeek preset follows the global thinking toggle instead of forcing disabled thinking', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput({
+        presetId: 'deepseek',
+        name: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/anthropic',
+        models: {
+          main: 'deepseek-v4-pro',
+          haiku: 'deepseek-v4-flash',
+          sonnet: 'deepseek-v4-pro',
+          opus: 'deepseek-v4-pro',
+        },
+      }))
+
+      await svc.activateProvider(provider.id)
+
+      const settings = await readSettings()
+      const env = settings.env as Record<string, string>
+      expect(env.CC_HAHA_SEND_DISABLED_THINKING).toBeUndefined()
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES).toBe(
+        'thinking,effort,adaptive_thinking,max_effort',
+      )
+      expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES).toBe(
+        'thinking,effort,adaptive_thinking,max_effort',
+      )
+      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES).toBe(
+        'thinking,effort,adaptive_thinking,max_effort',
+      )
     })
 
     test('adding additional providers should keep activeId unchanged', async () => {
@@ -187,6 +299,149 @@ describe('ProviderService', () => {
       const fetched = await svc.getProvider(added.id)
       expect(fetched.id).toBe(added.id)
       expect(fetched.name).toBe(added.name)
+    })
+
+    describe('ChatGPT Official provider metadata', () => {
+      test('normalizes the built-in ChatGPT provider as an active provider id', async () => {
+        await fs.mkdir(path.join(tmpDir, 'claude-abay'), { recursive: true })
+        await fs.writeFile(
+          path.join(tmpDir, 'claude-abay', 'providers.json'),
+          JSON.stringify({ activeId: 'openai-official', providers: [] }),
+          'utf-8',
+        )
+
+        const svc = new ProviderService()
+        const result = await svc.listProviders()
+
+        expect(result.activeId).toBe('openai-official')
+        expect(result.providers).toEqual([])
+      })
+
+      test('returns built-in ChatGPT provider metadata without persisting secrets', async () => {
+        const svc = new ProviderService()
+        const provider = await svc.getProvider('openai-official')
+
+        expect(provider).toMatchObject({
+          id: 'openai-official',
+          presetId: 'openai-official',
+          name: 'ChatGPT Official',
+          apiKey: '',
+          apiFormat: 'openai_responses',
+          runtimeKind: 'openai_oauth',
+          models: {
+            main: 'gpt-5.3-codex',
+            haiku: 'gpt-5.4-mini',
+            sonnet: 'gpt-5.4',
+            opus: 'gpt-5.3-codex',
+          },
+        })
+      })
+
+      test('activating ChatGPT Official writes OpenAI OAuth runtime env without Anthropic auth or proxy env', async () => {
+        const svc = new ProviderService()
+
+        await svc.activateProvider('openai-official')
+
+        const config = await readProvidersConfig()
+        const settings = await readSettings()
+        expect(config.activeId).toBe('openai-official')
+        const env = settings.env as Record<string, string>
+        expect(env.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBe('1')
+        expect(env.OPENAI_CODEX_OAUTH_FILE).toBe(
+          path.join(tmpDir, 'claude-abay', 'openai-oauth.json'),
+        )
+        expect(env.ANTHROPIC_MODEL).toBe('gpt-5.3-codex')
+        expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('gpt-5.4-mini')
+        expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('gpt-5.4')
+        expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('gpt-5.3-codex')
+        expect(typeof env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS).toBe('string')
+        expect(JSON.parse(env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS)).toEqual({
+          'gpt-5.3-codex': 258_400,
+          'gpt-5.4': 950_000,
+          'gpt-5.5': 258_400,
+          'gpt-5.4-mini': 258_400,
+        })
+        expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
+        expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+      })
+
+      test('activating ChatGPT Official clears stale managed provider env', async () => {
+        const svc = new ProviderService()
+        const provider = await svc.addProvider(sampleInput({
+          apiFormat: 'openai_responses',
+          baseUrl: 'https://api.example.com/openai',
+          models: {
+            main: 'provider-main',
+            haiku: 'provider-haiku',
+            sonnet: 'provider-sonnet',
+            opus: 'provider-opus',
+          },
+        }))
+        await svc.activateProvider(provider.id)
+        expect(((await readSettings()).env as Record<string, string>).ANTHROPIC_BASE_URL).toContain('/proxy')
+
+        await svc.activateProvider('openai-official')
+
+        const settings = await readSettings()
+        const env = settings.env as Record<string, string>
+        expect(env.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBe('1')
+        expect(env.OPENAI_CODEX_OAUTH_FILE).toBe(
+          path.join(tmpDir, 'claude-abay', 'openai-oauth.json'),
+        )
+        expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
+        expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+      })
+
+      test('auth status reports ChatGPT Official from the desktop OpenAI token file', async () => {
+        await fs.mkdir(path.join(tmpDir, 'claude-abay'), { recursive: true })
+        await fs.writeFile(
+          path.join(tmpDir, 'claude-abay', 'openai-oauth.json'),
+          JSON.stringify({
+            accessToken: 'openai-access',
+            refreshToken: 'openai-refresh',
+            expiresAt: Date.now() + 60 * 60_000,
+            email: 'user@example.com',
+            accountId: 'acct_123',
+          }),
+          'utf-8',
+        )
+
+        const svc = new ProviderService()
+        await svc.activateProvider('openai-official')
+
+        await expect(svc.checkAuthStatus()).resolves.toMatchObject({
+          hasAuth: true,
+          source: 'openai-oauth',
+          activeProvider: 'ChatGPT Official',
+        })
+      })
+
+      test('auth status reports ChatGPT Official as unauthenticated when the OpenAI token file is missing', async () => {
+        const svc = new ProviderService()
+        await svc.activateProvider('openai-official')
+
+        await expect(svc.checkAuthStatus()).resolves.toMatchObject({
+          hasAuth: false,
+          source: 'none',
+          activeProvider: 'ChatGPT Official',
+        })
+      })
+
+      test('activating another provider clears ChatGPT Official runtime markers', async () => {
+        const svc = new ProviderService()
+        const provider = await svc.addProvider(sampleInput())
+
+        await svc.activateProvider('openai-official')
+        await svc.activateProvider(provider.id)
+
+        const env = (await readSettings()).env as Record<string, string>
+        expect(env.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBeUndefined()
+        expect(env.OPENAI_CODEX_OAUTH_FILE).toBeUndefined()
+        expect(env.ANTHROPIC_BASE_URL).toBe('https://api.example.com')
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-test-key-123')
+      })
     })
 
     test('should throw 404 for non-existent id', async () => {
@@ -246,7 +501,7 @@ describe('ProviderService', () => {
       const env = settings.env as Record<string, string>
       expect(env.ANTHROPIC_BASE_URL).toBe('https://new-api.example.com')
       expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-new-key')
-      expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+      expect(env.ANTHROPIC_API_KEY).toBe('')
       expect(env.ANTHROPIC_MODEL).toBe('model-main')
     })
 
@@ -270,6 +525,27 @@ describe('ProviderService', () => {
       settings = await readSettings()
       env = settings.env as Record<string, string>
       expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+    })
+
+    test('should normalize empty model mappings before syncing settings', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput({
+        models: {
+          main: 'gpt-5.5',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+      }))
+
+      await svc.activateProvider(provider.id)
+
+      const settings = await readSettings()
+      const env = settings.env as Record<string, string>
+      expect(env.ANTHROPIC_MODEL).toBe('gpt-5.5')
+      expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('gpt-5.5')
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('gpt-5.5')
+      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('gpt-5.5')
     })
 
     test('updating active provider should override and clear model context windows', async () => {
@@ -386,12 +662,34 @@ describe('ProviderService', () => {
       const env = settings.env as Record<string, string>
       expect(env.ANTHROPIC_BASE_URL).toBe('https://second-api.example.com')
       expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-second-key')
-      expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+      expect(env.ANTHROPIC_API_KEY).toBe('')
       expect(env.ANTHROPIC_MODEL).toBe('model-main')
       expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('model-haiku')
       expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('model-sonnet')
       expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('model-opus')
+      expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0')
       expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+    })
+
+    test('should preserve attribution header for Claude-prefixed provider models', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput({
+        models: {
+          main: 'Claude Sonnet 4.6',
+          haiku: 'Claude Haiku 4.5',
+          sonnet: 'Claude Sonnet 4.6',
+          opus: 'Claude Opus 4.7',
+        },
+      }))
+
+      await svc.activateProvider(provider.id)
+
+      const settings = await readSettings()
+      const env = settings.env as Record<string, string>
+      expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('1')
+
+      const runtimeEnv = await svc.getProviderRuntimeEnv(provider.id)
+      expect(runtimeEnv.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('1')
     })
 
     test('should honor provider auth env strategies on activation and runtime env', async () => {
@@ -483,6 +781,7 @@ describe('ProviderService', () => {
       expect(clearedEnv.API_TIMEOUT_MS).toBeUndefined()
       expect(clearedEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBeUndefined()
       expect(clearedEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+      expect(clearedEnv.CLAUDE_CODE_ATTRIBUTION_HEADER).toBeUndefined()
       expect(clearedEnv.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS).toBeUndefined()
     })
 
@@ -565,6 +864,23 @@ describe('ProviderService', () => {
       expect(env.ANTHROPIC_BASE_URL).toBe('https://api.example.com')
     })
 
+    test('should recover malformed managed settings before activation sync', async () => {
+      await fs.mkdir(path.join(tmpDir, 'claude-abay'), { recursive: true })
+      await fs.writeFile(path.join(tmpDir, 'claude-abay', 'settings.json'), '{not json', 'utf-8')
+
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput())
+
+      await svc.activateProvider(provider.id)
+
+      const settings = await readSettings()
+      const env = settings.env as Record<string, string>
+      const files = await fs.readdir(path.join(tmpDir, 'claude-abay'))
+
+      expect(env.ANTHROPIC_BASE_URL).toBe('https://api.example.com')
+      expect(files.some((name) => name.startsWith('settings.json.invalid-'))).toBe(true)
+    })
+
     test('should throw 404 for non-existent provider id', async () => {
       const svc = new ProviderService()
 
@@ -597,6 +913,14 @@ describe('ProviderService', () => {
       expect(active).toBeNull()
     })
 
+    test('should return null for explicit ChatGPT Official proxy lookup', async () => {
+      const svc = new ProviderService()
+
+      const active = await svc.getProviderForProxy('openai-official')
+
+      expect(active).toBeNull()
+    })
+
     test('should return the active provider proxy config', async () => {
       const svc = new ProviderService()
       const provider = await svc.addProvider(sampleInput())
@@ -607,6 +931,169 @@ describe('ProviderService', () => {
       expect(active!.baseUrl).toBe(provider.baseUrl)
       expect(active!.apiKey).toBe(provider.apiKey)
       expect(active!.apiFormat).toBe('anthropic')
+    })
+
+    test('should return null when ChatGPT Official is the active provider', async () => {
+      const svc = new ProviderService()
+      await svc.activateProvider('openai-official')
+
+      const active = await svc.getProviderForProxy()
+
+      expect(active).toBeNull()
+    })
+  })
+
+  describe('handleProxyRequest', () => {
+    test('injects Claude Code billing attribution with compat version and signed CCH', async () => {
+      const originalFetch = globalThis.fetch
+      const originalEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+      delete process.env.CLAUDE_CODE_ENTRYPOINT
+      const calls: Array<{ body: Record<string, unknown> }> = []
+      globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+        return new Response(JSON.stringify({
+          id: 'chatcmpl-1',
+          object: 'chat.completion',
+          created: 0,
+          model: 'gpt-4',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch
+
+      try {
+        const svc = new ProviderService()
+        const provider = await svc.addProvider(sampleInput({ apiFormat: 'openai_chat' }))
+        await svc.activateProvider(provider.id)
+
+        const req = new Request('http://localhost:3456/proxy/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'gpt-4',
+            max_tokens: 64,
+            messages: [{ role: 'user', content: 'hello from proxy' }],
+          }),
+        })
+
+        const res = await handleProxyRequest(req, new URL(req.url))
+        expect(res.status).toBe(200)
+
+        const system = calls[0].body.messages as Array<Record<string, string>>
+        expect(system[0].role).toBe('system')
+        expect(system[0].content).toMatch(
+          /^x-anthropic-billing-header: cc_version=2\.1\.92\.693; cc_entrypoint=unknown; cch=[0-9a-f]{5};$/,
+        )
+      } finally {
+        globalThis.fetch = originalFetch
+        if (originalEntrypoint === undefined) delete process.env.CLAUDE_CODE_ENTRYPOINT
+        else process.env.CLAUDE_CODE_ENTRYPOINT = originalEntrypoint
+      }
+    })
+
+    test('omits image_url parts for DeepSeek OpenAI Chat proxy requests', async () => {
+      const originalFetch = globalThis.fetch
+      const calls: Array<{ body: Record<string, unknown> }> = []
+      globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+        return new Response(JSON.stringify({
+          id: 'chatcmpl-1',
+          object: 'chat.completion',
+          created: 0,
+          model: 'deepseek-v4-pro',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'I cannot view images.' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch
+
+      try {
+        const svc = new ProviderService()
+        const provider = await svc.addProvider(sampleInput({
+          apiFormat: 'openai_chat',
+          baseUrl: 'https://api.deepseek.com',
+          models: {
+            main: 'deepseek-v4-pro',
+            haiku: 'deepseek-v4-pro',
+            sonnet: 'deepseek-v4-pro',
+            opus: 'deepseek-v4-pro',
+          },
+        }))
+        await svc.activateProvider(provider.id)
+
+        const req = new Request('http://localhost:3456/proxy/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'deepseek-v4-pro',
+            max_tokens: 64,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'text', text: 'What is in this screenshot?' },
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc123' } },
+              ],
+            }],
+          }),
+        })
+
+        const res = await handleProxyRequest(req, new URL(req.url))
+        expect(res.status).toBe(200)
+
+        const serialized = JSON.stringify(calls[0].body)
+        expect(serialized).not.toContain('image_url')
+        expect(serialized).not.toContain('abc123')
+        expect(serialized).toContain('What is in this screenshot?')
+        expect(serialized).toContain('Image omitted')
+      } finally {
+        globalThis.fetch = originalFetch
+      }
+    })
+
+    test('normalizes context-window suffixes before forwarding OpenAI Chat proxy requests', async () => {
+      const originalFetch = globalThis.fetch
+      const calls: Array<{ body: Record<string, unknown> }> = []
+      globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+        return new Response(JSON.stringify({
+          id: 'chatcmpl-1',
+          object: 'chat.completion',
+          created: 0,
+          model: 'mimo-v2.5-pro',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch
+
+      try {
+        const svc = new ProviderService()
+        const provider = await svc.addProvider(sampleInput({ apiFormat: 'openai_chat' }))
+        await svc.activateProvider(provider.id)
+
+        const req = new Request('http://localhost:3456/proxy/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'mimo-v2.5-pro[1m]',
+            max_tokens: 64,
+            messages: [{ role: 'user', content: 'hello from proxy' }],
+          }),
+        })
+
+        const res = await handleProxyRequest(req, new URL(req.url))
+        expect(res.status).toBe(200)
+        expect(calls[0].body.model).toBe('mimo-v2.5-pro')
+      } finally {
+        globalThis.fetch = originalFetch
+      }
     })
   })
 
@@ -701,6 +1188,123 @@ describe('ProviderService', () => {
         expect(calls[2].headers['x-api-key']).toBe('sk-dual')
         expect(calls[2].headers.Authorization).toBe('Bearer sk-dual')
       } finally {
+        globalThis.fetch = originalFetch
+      }
+    })
+
+    test('normalizes context-window suffixes for Anthropic-compatible connectivity tests', async () => {
+      const originalFetch = globalThis.fetch
+      const calls: Array<{ body: Record<string, unknown> }> = []
+      globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+        return new Response(JSON.stringify({
+          type: 'message',
+          model: 'mimo-v2.5-pro',
+          content: [],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch
+
+      try {
+        const svc = new ProviderService()
+        const result = await svc.testProviderConfig({
+          baseUrl: 'https://api.xiaomimimo.com/anthropic',
+          apiKey: 'sk-api',
+          modelId: 'mimo-v2.5-pro[1m]',
+          authStrategy: 'auth_token',
+          apiFormat: 'anthropic',
+        })
+
+        expect(result.connectivity.success).toBe(true)
+        expect(result.connectivity.modelUsed).toBe('mimo-v2.5-pro')
+        expect(calls[0].body.model).toBe('mimo-v2.5-pro')
+      } finally {
+        globalThis.fetch = originalFetch
+      }
+    })
+
+    test('normalizes context-window suffixes for provider proxy pipeline tests', async () => {
+      const originalFetch = globalThis.fetch
+      const calls: Array<{ body: Record<string, unknown> }> = []
+      globalThis.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+        return new Response(JSON.stringify({
+          id: 'chatcmpl-1',
+          object: 'chat.completion',
+          created: 0,
+          model: 'mimo-v2.5-pro',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch
+
+      try {
+        const svc = new ProviderService()
+        const result = await svc.testProviderConfig({
+          baseUrl: 'https://api.example.com',
+          apiKey: 'sk-api',
+          modelId: 'mimo-v2.5-pro[1m]',
+          authStrategy: 'api_key',
+          apiFormat: 'openai_chat',
+        })
+
+        expect(result.connectivity.success).toBe(true)
+        expect(result.proxy?.success).toBe(true)
+        expect(result.connectivity.modelUsed).toBe('mimo-v2.5-pro')
+        expect(result.proxy?.modelUsed).toBe('mimo-v2.5-pro')
+        expect(calls.map((call) => call.body.model)).toEqual(['mimo-v2.5-pro', 'mimo-v2.5-pro'])
+      } finally {
+        globalThis.fetch = originalFetch
+      }
+    })
+
+    test('should use configured network timeout for provider tests', async () => {
+      await fs.writeFile(
+        path.join(tmpDir, 'settings.json'),
+        JSON.stringify({
+          network: {
+            aiRequestTimeoutMs: 180_000,
+            proxy: { mode: 'system', url: '' },
+          },
+        }),
+        'utf-8',
+      )
+      const originalFetch = globalThis.fetch
+      const originalTimeout = AbortSignal.timeout
+      const timeoutCalls: number[] = []
+      globalThis.fetch = mock(async (_url: string | URL | Request, _init?: RequestInit) => {
+        return new Response(JSON.stringify({
+          type: 'message',
+          model: 'model-main',
+          content: [],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch
+      AbortSignal.timeout = ((ms: number) => {
+        timeoutCalls.push(ms)
+        return originalTimeout(ms)
+      }) as typeof AbortSignal.timeout
+
+      try {
+        const svc = new ProviderService()
+        await svc.testProviderConfig({
+          baseUrl: 'https://api.example.com/anthropic',
+          apiKey: 'sk-api',
+          modelId: 'model-main',
+          authStrategy: 'api_key',
+          apiFormat: 'anthropic',
+        })
+
+        expect(timeoutCalls).toEqual([180_000])
+      } finally {
+        AbortSignal.timeout = originalTimeout
         globalThis.fetch = originalFetch
       }
     })
@@ -887,7 +1491,7 @@ describe('Providers API', () => {
     const env = settings.env as Record<string, string>
     expect(env.ANTHROPIC_BASE_URL).toBe('https://second.example.com')
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-second')
-    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(env.ANTHROPIC_API_KEY).toBe('')
     expect(env.ANTHROPIC_MODEL).toBe('model-main')
   })
 

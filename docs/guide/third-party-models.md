@@ -111,7 +111,7 @@ litellm --config litellm_config.yaml --port 4000
 
 #### 方式 A：通过 `.env` 文件
 
-```env
+```bash
 ANTHROPIC_AUTH_TOKEN=sk-anything
 ANTHROPIC_BASE_URL=http://localhost:4000
 ANTHROPIC_MODEL=gpt-4o
@@ -159,7 +159,7 @@ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
 ### OpenRouter
 
-```env
+```bash
 ANTHROPIC_AUTH_TOKEN=sk-or-v1-xxx
 ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
 ANTHROPIC_MODEL=openai/gpt-4o
@@ -176,17 +176,18 @@ MiniMax 提供 Anthropic 兼容接口，支持直接接入，无需代理。可�
 
 | 模型 | 说明 |
 |------|------|
-| `MiniMax-M2.7` | 默认推荐，综合性能优秀 |
+| `MiniMax-M3` | 默认推荐，最新一代综合性能优秀，支持 1M 上下文 |
+| `MiniMax-M2.7` | 上一代稳定版本 |
 | `MiniMax-M2.7-highspeed` | 响应更快，适合对速度有要求的场景 |
 
-```env
+```bash
 ANTHROPIC_AUTH_TOKEN=your_minimax_api_key_here
 # 海外用户使用 api.minimax.io，国内用户可改为 api.minimaxi.com
 ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
-ANTHROPIC_MODEL=MiniMax-M2.7
-ANTHROPIC_DEFAULT_SONNET_MODEL=MiniMax-M2.7
+ANTHROPIC_MODEL=MiniMax-M3
+ANTHROPIC_DEFAULT_SONNET_MODEL=MiniMax-M3
 ANTHROPIC_DEFAULT_HAIKU_MODEL=MiniMax-M2.7-highspeed
-ANTHROPIC_DEFAULT_OPUS_MODEL=MiniMax-M2.7
+ANTHROPIC_DEFAULT_OPUS_MODEL=MiniMax-M3
 API_TIMEOUT_MS=3000000
 DISABLE_TELEMETRY=1
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1

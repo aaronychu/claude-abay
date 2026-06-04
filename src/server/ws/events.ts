@@ -24,7 +24,7 @@ export type ClientMessage =
       response: ComputerUsePermissionResponse
     }
   | { type: 'set_permission_mode'; mode: string }
-  | { type: 'set_runtime_config'; providerId: string | null; modelId: string }
+  | { type: 'set_runtime_config'; providerId: string | null; modelId: string; effortLevel?: string }
   | { type: 'stop_generation' }
   | { type: 'ping' }
 
@@ -34,6 +34,7 @@ export type AttachmentRef = {
   path?: string
   data?: string // base64 for images
   mimeType?: string
+  isDirectory?: boolean
 }
 
 // ============================================================================
@@ -62,7 +63,16 @@ export type ServerMessage =
   | { type: 'message_complete'; usage: TokenUsage }
   | { type: 'thinking'; text: string }
   | { type: 'status'; state: ChatState; verb?: string; elapsed?: number; tokens?: number }
-  | { type: 'error'; message: string; code: string; retryable?: boolean }
+  | {
+      type: 'api_retry'
+      attempt: number
+      maxRetries: number
+      retryDelayMs: number
+      errorStatus: number | null
+      errorType?: string
+      errorMessage?: string
+    }
+  | { type: 'error'; message: string; code: string; retryable?: boolean; businessErrorCode?: string }
   | { type: 'system_notification'; subtype: string; message?: string; data?: unknown }
   | { type: 'pong' }
   | { type: 'team_update'; teamName: string; members: TeamMemberStatus[] }
@@ -78,7 +88,7 @@ export type TokenUsage = {
   cache_creation_tokens?: number
 }
 
-export type ChatState = 'idle' | 'thinking' | 'tool_executing' | 'streaming' | 'permission_pending'
+export type ChatState = 'idle' | 'thinking' | 'compacting' | 'tool_executing' | 'streaming' | 'permission_pending'
 
 export type TeamMemberStatus = {
   agentId: string

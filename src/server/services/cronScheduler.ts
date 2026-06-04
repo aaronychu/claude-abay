@@ -8,13 +8,21 @@
  */
 
 import * as fs from 'fs/promises'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
 import { CronService, type CronTask } from './cronService.js'
 import { SessionService } from './sessionService.js'
 import { sendTaskNotification } from './notificationService.js'
+import { ProviderService } from './providerService.js'
+import { isProviderManagedEnvVar } from '../../utils/managedEnvConstants.js'
+import {
+  buildClaudeCliArgs,
+  resolveClaudeCliLauncher,
+} from '../../utils/desktopBundledCli.js'
+import { getProcessEnvWithTerminalShellEnvironment } from '../../utils/terminalShellEnvironment.js'
+import { attributionHeaderEnvForModel } from './attributionHeaderPolicy.js'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -242,6 +250,87 @@ function trimRuns(data: RunsFile): void {
 
 const TASK_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
 
+type CronCliResolutionOptions = {
+  cliPath?: string | null
+  execPath?: string
+  appRoot?: string
+  cwd?: string
+  moduleDir?: string
+  env?: NodeJS.ProcessEnv
+}
+
+function isSourceProjectRoot(root: string): boolean {
+  return (
+    existsSync(path.join(root, 'preload.ts')) &&
+    existsSync(path.join(root, 'src', 'entrypoints', 'cli.tsx'))
+  )
+}
+
+function findSourceProjectRoot(startDir: string): string | null {
+  let current = path.resolve(startDir)
+
+  while (true) {
+    if (isSourceProjectRoot(current)) {
+      return current
+    }
+
+    const parent = path.dirname(current)
+    if (parent === current) {
+      return null
+    }
+    current = parent
+  }
+}
+
+export function resolveCronProjectRoot(
+  options: CronCliResolutionOptions = {},
+): string {
+  const env = options.env ?? process.env
+  const explicitRoot = env.CC_HAHA_ROOT?.trim()
+  if (explicitRoot && isSourceProjectRoot(path.resolve(explicitRoot))) {
+    return path.resolve(explicitRoot)
+  }
+
+  const cwdRoot = findSourceProjectRoot(options.cwd ?? process.cwd())
+  if (cwdRoot) {
+    return cwdRoot
+  }
+
+  const moduleRoot = findSourceProjectRoot(options.moduleDir ?? import.meta.dir)
+  if (moduleRoot) {
+    return moduleRoot
+  }
+
+  return path.resolve(options.moduleDir ?? import.meta.dir, '../../..')
+}
+
+export function buildCronCliArgs(
+  baseArgs: string[],
+  options: CronCliResolutionOptions = {},
+): string[] {
+  const launcher = resolveClaudeCliLauncher({
+    cliPath: options.cliPath ?? process.env.CLAUDE_CLI_PATH,
+    execPath: options.execPath ?? process.execPath,
+  })
+
+  if (launcher) {
+    return buildClaudeCliArgs(
+      launcher,
+      baseArgs,
+      options.appRoot ?? process.env.CLAUDE_APP_ROOT,
+    )
+  }
+
+  const projectRoot = resolveCronProjectRoot(options)
+  return [
+    'bun',
+    '--preload',
+    path.join(projectRoot, 'preload.ts'),
+    path.join(projectRoot, 'src', 'entrypoints', 'cli.tsx'),
+    ...baseArgs,
+  ]
+}
+
 export class CronScheduler {
   private intervalId: Timer | null = null
   private runningTasks = new Map<
@@ -252,6 +341,7 @@ export class CronScheduler {
   private lastFiredMinuteKey = new Map<string, string>()
   private cronService: CronService
   private sessionService: SessionService
+  private providerService = new ProviderService()
 
   constructor(cronService?: CronService) {
     this.cronService = cronService || new CronService()
@@ -363,13 +453,18 @@ export class CronScheduler {
       console.warn(`[cron] task ${task.id}: folderPath "${task.folderPath}" is not a valid directory, falling back to homedir`)
       workDir = os.homedir()
     }
+    workDir = this.resolveCanonicalWorkDir(workDir)
 
     // Only create a session when explicitly requested (manual "Run Now"),
     // not for automatic cron runs — avoids flooding the sidebar.
     let sessionId: string | undefined
     if (options?.createSession) {
       try {
-        const result = await this.sessionService.createSession(workDir)
+        const result = await this.sessionService.createSession(
+          workDir,
+          undefined,
+          'bypassPermissions',
+        )
         sessionId = result.sessionId
         // Delete the placeholder JSONL file so the CLI can create it fresh
         // with actual content. Same pattern as conversationService.ts.
@@ -396,11 +491,6 @@ export class CronScheduler {
     // Persist the "running" state
     await appendRun(run)
 
-    // Resolve paths relative to project root
-    const projectRoot = path.resolve(import.meta.dir, '../../..')
-    const cliPath = path.join(projectRoot, 'src/entrypoints/cli.tsx')
-    const preloadPath = path.join(projectRoot, 'preload.ts')
-
     const inputPayload = JSON.stringify({
       type: 'user',
       message: {
@@ -411,25 +501,26 @@ export class CronScheduler {
       session_id: sessionId || '',
     }) + '\n'
 
+    const cliArgs = buildCronCliArgs([
+      '--print',
+      '--verbose',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      ...(sessionId ? ['--session-id', sessionId] : []),
+      ...this.getRuntimeArgs(task),
+    ])
+
+    const childEnv = await this.buildTaskChildEnv(workDir, task)
     const proc = Bun.spawn(
-      [
-        'bun',
-        '--preload',
-        preloadPath,
-        cliPath,
-        '--print',
-        '--verbose',
-        '--input-format',
-        'stream-json',
-        '--output-format',
-        'stream-json',
-        ...(sessionId ? ['--session-id', sessionId] : []),
-      ],
+      cliArgs,
       {
         stdin: 'pipe',
         stdout: 'pipe',
         stderr: 'pipe',
         cwd: workDir,
+        env: childEnv,
       },
     )
 
@@ -510,6 +601,7 @@ export class CronScheduler {
         }
       }
 
+      await this.persistScheduledSessionPermission(sessionId, workDir)
       await updateRun(completedRun)
 
       // Send IM notification if configured
@@ -541,10 +633,166 @@ export class CronScheduler {
           new Date(completedAt).getTime() - new Date(startedAt).getTime(),
       }
 
+      await this.persistScheduledSessionPermission(sessionId, workDir)
       await updateRun(failedRun)
 
       return failedRun
     }
+  }
+
+  private async persistScheduledSessionPermission(
+    sessionId: string | undefined,
+    workDir: string,
+  ): Promise<void> {
+    if (!sessionId) return
+    await this.sessionService.appendSessionMetadata(sessionId, {
+      workDir,
+      permissionMode: 'bypassPermissions',
+    }).catch(() => {
+      // The task result is still valid even if session metadata refresh fails.
+    })
+  }
+
+  private resolveCanonicalWorkDir(workDir: string): string {
+    try {
+      return realpathSync(workDir)
+    } catch {
+      return workDir
+    }
+  }
+
+  private getRuntimeArgs(task: CronTask): string[] {
+    const model = task.model?.trim()
+    return [
+      ...(model ? ['--model', model] : []),
+      '--dangerously-skip-permissions',
+    ]
+  }
+
+  private async buildTaskChildEnv(
+    workDir: string,
+    task: CronTask,
+  ): Promise<Record<string, string | undefined>> {
+    const cleanEnv = await getProcessEnvWithTerminalShellEnvironment()
+    delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN
+
+    if (this.shouldStripInheritedProviderEnv(task.providerId)) {
+      for (const key of Object.keys(cleanEnv)) {
+        if (isProviderManagedEnvVar(key)) {
+          delete cleanEnv[key]
+        }
+      }
+    }
+
+    const explicitProviderEnv =
+      typeof task.providerId === 'string'
+        ? await this.providerService.getProviderRuntimeEnv(task.providerId)
+        : null
+    if (explicitProviderEnv && task.model?.trim()) {
+      explicitProviderEnv.ANTHROPIC_MODEL = task.model.trim()
+    }
+    const attributionHeaderEnv = attributionHeaderEnvForModel(
+      task.model?.trim() ||
+        explicitProviderEnv?.ANTHROPIC_MODEL ||
+        cleanEnv.ANTHROPIC_MODEL,
+    )
+
+    return {
+      ...cleanEnv,
+      CLAUDE_CODE_ENABLE_TASKS: '1',
+      CLAUDE_CODE_ENTRYPOINT: 'sdk-cli',
+      CALLER_DIR: workDir,
+      PWD: workDir,
+      CC_HAHA_SKIP_DOTENV: '1',
+      ...(explicitProviderEnv
+        ? {
+            CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
+            CLAUDE_CODE_ENTRYPOINT: 'sdk-cli',
+          }
+        : {}),
+      ...(explicitProviderEnv ?? {}),
+      ...(this.shouldMarkManagedOAuth(task.providerId)
+        ? await this.buildOfficialOAuthEnv()
+        : {}),
+      ...attributionHeaderEnv,
+    }
+  }
+
+  private getConfigDir(): string {
+    return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+  }
+
+  private shouldStripInheritedProviderEnv(providerId?: string | null): boolean {
+    if (providerId !== undefined) {
+      return true
+    }
+
+    const ccHahaDir = path.join(this.getConfigDir(), 'claude-abay')
+    if (existsSync(path.join(ccHahaDir, 'providers.json'))) {
+      return true
+    }
+
+    try {
+      const raw = readFileSync(path.join(ccHahaDir, 'settings.json'), 'utf-8')
+      const parsed = JSON.parse(raw) as { env?: Record<string, string> }
+      const env = parsed.env ?? {}
+      return Object.entries(env).some(
+        ([key, value]) =>
+          isProviderManagedEnvVar(key) &&
+          typeof value === 'string' &&
+          value.trim().length > 0,
+      )
+    } catch {
+      return false
+    }
+  }
+
+  private shouldMarkManagedOAuth(providerId?: string | null): boolean {
+    if (providerId === null) {
+      return true
+    }
+    if (typeof providerId === 'string') {
+      return false
+    }
+
+    try {
+      const raw = readFileSync(
+        path.join(this.getConfigDir(), 'claude-abay', 'settings.json'),
+        'utf-8',
+      )
+      const parsed = JSON.parse(raw) as { env?: Record<string, string> }
+      const env = parsed.env ?? {}
+      const hasProviderEnv = [
+        'ANTHROPIC_API_KEY',
+        'ANTHROPIC_AUTH_TOKEN',
+        'ANTHROPIC_BASE_URL',
+      ].some(
+        (key) =>
+          typeof env[key] === 'string' && env[key]!.trim().length > 0,
+      )
+      return !hasProviderEnv
+    } catch {
+      return true
+    }
+  }
+
+  private async buildOfficialOAuthEnv(): Promise<Record<string, string>> {
+    const env: Record<string, string> = {
+      CLAUDE_CODE_ENTRYPOINT: 'claude-desktop',
+    }
+    try {
+      const { abayOAuthService } = await import('./abayOAuthService.js')
+      const token = await abayOAuthService.ensureFreshAccessToken()
+      if (token) {
+        env.CLAUDE_CODE_OAUTH_TOKEN = token
+      }
+    } catch (err) {
+      console.error(
+        '[cronScheduler] ensureFreshAccessToken failed:',
+        err instanceof Error ? err.message : err,
+      )
+    }
+    return env
   }
 
   // ─── Cleanup ───────────────────────────────────────────────────────────────

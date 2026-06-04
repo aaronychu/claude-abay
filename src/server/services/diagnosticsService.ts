@@ -140,15 +140,19 @@ export class DiagnosticsService {
     this.processCaptureInstalled = true
 
     process.on('uncaughtException', (error) => {
+      this.writeProcessFailureToStderr('Uncaught exception', error)
+      const fallbackExit = setTimeout(() => process.exit(1), 1000)
+      fallbackExit.unref?.()
       void this.recordEvent({
         type: 'server_uncaught_exception',
         severity: 'error',
         summary: error.message || 'Uncaught exception',
         details: { error },
-      })
+      }).finally(() => process.exit(1))
     })
 
     process.on('unhandledRejection', (reason) => {
+      this.writeProcessFailureToStderr('Unhandled rejection', reason)
       void this.recordEvent({
         type: 'server_unhandled_rejection',
         severity: 'error',
@@ -309,6 +313,7 @@ export class DiagnosticsService {
   sanitizeString(value: string, maxLength = MAX_STRING_LENGTH): string {
     let sanitized = value
       .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+/gi, '$1[REDACTED]')
+      .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/?#\s:@]+(?::[^/?#\s@]*)?@)/gi, '$1[REDACTED]@')
       .replace(/((?:api[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|session[_-]?token|token|secret|password)\s*[:=]\s*)[^\s,;"'}]+/gi, '$1[REDACTED]')
       .replace(/(ANTHROPIC_(?:API_KEY|AUTH_TOKEN)\s*[:=]\s*)[^\s,;"'}]+/gi, '$1[REDACTED]')
       .replace(/([?&](?:api[_-]?key|token|auth|access_token|refresh_token|key)=)[^&\s]+/gi, '$1[REDACTED]')
@@ -352,6 +357,17 @@ export class DiagnosticsService {
     } catch {
       return this.sanitizeString(String(reason))
     }
+  }
+
+  private writeProcessFailureToStderr(label: string, reason: unknown): void {
+    if (reason instanceof Error && reason.stack) {
+      process.stderr.write(`[Server] ${label}:\n${reason.stack}\n`)
+      return
+    }
+    const summary = reason instanceof Error
+      ? `${reason.name}: ${reason.message}`
+      : this.formatUnknownReason(reason)
+    process.stderr.write(`[Server] ${label}: ${summary}\n`)
   }
 
   private formatRuntimeLogEntry(event: DiagnosticEvent): string {

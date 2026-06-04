@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
 
-import { getEffectiveContextWindowSize } from './autoCompact.js'
+import { getAutoCompactThreshold, getEffectiveContextWindowSize } from './autoCompact.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import { MODEL_CONTEXT_WINDOWS_ENV_KEY } from '../../utils/model/modelContextWindows.js'
 
@@ -36,6 +36,13 @@ describe('model context window resolution', () => {
     expect(getContextWindowForModel('glm-4.5-air')).toBe(128_000)
   })
 
+  test('uses Codex OAuth effective context windows for OpenAI GPT models', () => {
+    expect(getContextWindowForModel('gpt-5.5')).toBe(258_400)
+    expect(getContextWindowForModel('gpt-5.4')).toBe(950_000)
+    expect(getContextWindowForModel('gpt-5.4-mini')).toBe(258_400)
+    expect(getContextWindowForModel('gpt-5.3-codex-spark')).toBe(121_600)
+  })
+
   test('uses per-model provider overrides before built-in defaults', () => {
     process.env[MODEL_CONTEXT_WINDOWS_ENV_KEY] = JSON.stringify({
       'deepseek-v4-pro': 500_000,
@@ -50,5 +57,13 @@ describe('model context window resolution', () => {
     process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '1000000'
 
     expect(getEffectiveContextWindowSize('unknown-future-model')).toBe(980_000)
+  })
+
+  test('derives auto-compact thresholds from provider context windows', () => {
+    expect(getAutoCompactThreshold('deepseek-v4-pro')).toBe(967_000)
+    expect(getAutoCompactThreshold('glm-5.1')).toBe(167_000)
+    expect(getAutoCompactThreshold('glm-4.5-air')).toBe(95_000)
+    expect(getAutoCompactThreshold('kimi-k2.6')).toBe(229_144)
+    expect(getAutoCompactThreshold('MiniMax-M2.7')).toBe(171_800)
   })
 })

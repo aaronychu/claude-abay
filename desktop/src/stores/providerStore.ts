@@ -2,8 +2,14 @@
 
 import { create } from 'zustand'
 import { providersApi } from '../api/providers'
+import { useChatStore } from './chatStore'
+import { useSessionRuntimeStore } from './sessionRuntimeStore'
 import { useSettingsStore } from './settingsStore'
 import { OFFICIAL_DEFAULT_MODEL_ID } from '../constants/modelCatalog'
+import {
+  OPENAI_OFFICIAL_DEFAULT_MODEL_ID,
+  OPENAI_OFFICIAL_PROVIDER_ID,
+} from '../constants/openaiOfficialProvider'
 import type {
   SavedProvider,
   CreateProviderInput,
@@ -12,6 +18,7 @@ import type {
   ProviderTestResult,
 } from '../types/provider'
 import type { ProviderPreset } from '../types/providerPreset'
+import type { RuntimeSelection } from '../types/runtime'
 
 type ProviderStore = {
   providers: SavedProvider[]
@@ -31,6 +38,61 @@ type ProviderStore = {
   activateOfficial: () => Promise<void>
   testProvider: (id: string, overrides?: { baseUrl?: string; modelId?: string; apiFormat?: string; authStrategy?: string }) => Promise<ProviderTestResult>
   testConfig: (input: TestProviderConfigInput) => Promise<ProviderTestResult>
+}
+
+function providerModelIds(provider: SavedProvider): Set<string> {
+  return new Set(
+    Object.values(provider.models)
+      .map((modelId) => modelId.trim())
+      .filter(Boolean),
+  )
+}
+
+function resolveRuntimeRefreshSelection(
+  provider: SavedProvider,
+  activeId: string | null,
+  currentSelection: RuntimeSelection | undefined,
+): RuntimeSelection | null {
+  if (currentSelection?.providerId === provider.id) {
+    const modelIds = providerModelIds(provider)
+    return {
+      providerId: provider.id,
+      modelId: modelIds.has(currentSelection.modelId)
+        ? currentSelection.modelId
+        : provider.models.main,
+      ...(currentSelection.effortLevel ? { effortLevel: currentSelection.effortLevel } : {}),
+    }
+  }
+
+  if (!currentSelection && activeId === provider.id) {
+    return {
+      providerId: provider.id,
+      modelId: provider.models.main,
+    }
+  }
+
+  return null
+}
+
+function refreshConnectedSessionsForProvider(provider: SavedProvider, activeId: string | null) {
+  const chatStore = useChatStore.getState()
+  const runtimeStore = useSessionRuntimeStore.getState()
+
+  for (const [sessionId, session] of Object.entries(chatStore.sessions)) {
+    if (session.connectionState !== 'connected' || session.chatState !== 'idle') {
+      continue
+    }
+
+    const selection = resolveRuntimeRefreshSelection(
+      provider,
+      activeId,
+      runtimeStore.selections[sessionId],
+    )
+    if (!selection) continue
+
+    runtimeStore.setSelection(sessionId, selection)
+    chatStore.setSessionRuntime(sessionId, selection)
+  }
 }
 
 export const useProviderStore = create<ProviderStore>((set, get) => ({
@@ -74,6 +136,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   updateProvider: async (id, input) => {
     const { provider } = await providersApi.update(id, input)
     await get().fetchProviders()
+    refreshConnectedSessionsForProvider(provider, get().activeId)
     return provider
   },
 
@@ -87,12 +150,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     await get().fetchProviders()
     // 更新默认 provider 时，同步刷新默认 model，避免 settings.json 里残留
     // 旧 provider 的 model id 导致默认选择指向不存在的模型。
-    const provider = get().providers.find((p) => p.id === id)
-    if (provider) {
-      const settings = useSettingsStore.getState()
-      await settings.setModel(provider.models.main)
+    const settings = useSettingsStore.getState()
+    if (id === OPENAI_OFFICIAL_PROVIDER_ID) {
+      await settings.setModel(OPENAI_OFFICIAL_DEFAULT_MODEL_ID)
       await settings.fetchAll()
+      return
     }
+
+    const provider = get().providers.find((p) => p.id === id)
+    if (!provider) return
+    await settings.setModel(provider.models.main)
+    await settings.fetchAll()
   },
 
   activateOfficial: async () => {

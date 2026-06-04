@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs/promises'
+import { createServer } from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { gunzipSync } from 'node:zlib'
@@ -29,6 +30,37 @@ function makeRequest(method: string, urlStr: string): { req: Request; url: URL; 
   return { req, url, segments }
 }
 
+async function getPort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('Failed to allocate a local port')))
+        return
+      }
+      server.close(() => resolve(address.port))
+    })
+  })
+}
+
+async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let lastError = ''
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url)
+      if (response.ok) return
+      lastError = `HTTP ${response.status}`
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+    }
+    await Bun.sleep(100)
+  }
+  throw new Error(`Timed out waiting for ${url}${lastError ? ` (${lastError})` : ''}`)
+}
+
 describe('DiagnosticsService', () => {
   test('writes sanitized structured events and runtime error summaries', async () => {
     const service = new DiagnosticsService()
@@ -40,6 +72,7 @@ describe('DiagnosticsService', () => {
       details: {
         apiKey: 'sk-secret',
         url: 'https://api.example.com?api_key=secret-value',
+        proxyUrl: 'https://proxy-user:p%40ss@example.com:8443/api',
         nested: { message: `home=${os.homedir()}` },
       },
     })
@@ -47,7 +80,10 @@ describe('DiagnosticsService', () => {
     const raw = await fs.readFile(path.join(tmpDir, 'claude-abay', 'diagnostics', 'diagnostics.jsonl'), 'utf-8')
     expect(raw).toContain('cli_start_failed')
     expect(raw).toContain('[REDACTED]')
+    expect(raw).toContain('https://[REDACTED]@example.com:8443/api')
     expect(raw).not.toContain('sk-secret')
+    expect(raw).not.toContain('proxy-user')
+    expect(raw).not.toContain('p%40ss')
     expect(raw).not.toContain(os.homedir())
 
     const runtime = await fs.readFile(path.join(tmpDir, 'claude-abay', 'diagnostics', 'runtime-errors.log'), 'utf-8')
@@ -102,6 +138,49 @@ describe('DiagnosticsService', () => {
     expect(archiveText).toContain('api.example.com')
     expect(archiveText).not.toContain('sk-provider-secret')
     expect(archiveText).not.toContain('provider-secret')
+  })
+
+  test('keeps fatal startup errors visible on stderr while recording diagnostics', async () => {
+    const port = await getPort()
+    const serverArgs = ['bun', 'run', 'src/server/index.ts', '--host', '127.0.0.1', '--port', String(port)]
+    const env = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: tmpDir,
+    }
+    const server = Bun.spawn(serverArgs, {
+      cwd: process.cwd(),
+      env,
+      stdout: 'ignore',
+      stderr: 'ignore',
+    })
+
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/health`, 10_000)
+
+      const duplicate = Bun.spawn(serverArgs, {
+        cwd: process.cwd(),
+        env,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(duplicate.stdout).text(),
+        new Response(duplicate.stderr).text(),
+        duplicate.exited,
+      ])
+
+      expect(exitCode).toBe(1)
+      expect(stdout).toBe('')
+      expect(stderr).toContain('[Server] Uncaught exception:')
+      expect(stderr).toContain(`Failed to start server. Is port ${port} in use?`)
+
+      const raw = await fs.readFile(path.join(tmpDir, 'claude-abay', 'diagnostics', 'diagnostics.jsonl'), 'utf-8')
+      expect(raw).toContain('server_uncaught_exception')
+      expect(raw).toContain(`Failed to start server. Is port ${port} in use?`)
+    } finally {
+      server.kill()
+      await server.exited.catch(() => undefined)
+    }
   })
 })
 

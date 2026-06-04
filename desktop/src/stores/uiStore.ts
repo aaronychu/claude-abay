@@ -1,46 +1,24 @@
 import { create } from 'zustand'
-import type { ThemeMode } from '../types/settings'
+import { isThemeMode, THEME_MODES, type ThemeMode } from '../types/settings'
 
 const THEME_STORAGE_KEY = 'claude-abay-theme'
-
-function getSystemAppearance(): 'light' | 'dark' {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-}
 
 function getStoredTheme(): ThemeMode {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY)
-    if (stored === 'light' || stored === 'dark' || stored === 'system') return stored
+    if (isThemeMode(stored)) return stored
   } catch { /* localStorage unavailable */ }
-  return 'system'
-}
-
-function resolveTheme(theme: ThemeMode): 'light' | 'dark' {
-  return theme === 'system' ? getSystemAppearance() : theme
+  return 'white'
 }
 
 export function applyTheme(theme: ThemeMode) {
   if (typeof document === 'undefined') return
-  const resolved = resolveTheme(theme)
-  document.documentElement.setAttribute('data-theme', resolved)
-  document.documentElement.style.colorScheme = resolved
-
-  // system 模式跟随系统，无 mismatch；light/dark 模式下检测是否与系统一致
-  const isMismatch = theme !== 'system' && theme !== getSystemAppearance()
-  document.documentElement.classList.toggle('theme-mismatch', isMismatch)
+  document.documentElement.setAttribute('data-theme', theme)
+  document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light'
 }
 
 export function initializeTheme() {
   applyTheme(getStoredTheme())
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    const stored = getStoredTheme()
-    if (stored === 'system') applyTheme('system')
-  })
-
-  // Windows: transparent window + Mica needs a CSS background for click events
-  if (/Win/.test(navigator.platform)) {
-    document.documentElement.classList.add('platform-windows')
-  }
 }
 
 export type Toast = {
@@ -52,13 +30,15 @@ export type Toast = {
 
 export type SettingsTab =
   | 'providers'
-  | 'permissions'
+  | 'activity'
   | 'general'
+  | 'h5Access'
   | 'adapters'
   | 'terminal'
   | 'mcp'
   | 'agents'
   | 'skills'
+  | 'memory'
   | 'plugins'
   | 'computerUse'
   | 'diagnostics'
@@ -72,6 +52,7 @@ type UIStore = {
   reviewSidebarOpen: boolean
   activeView: ActiveView
   pendingSettingsTab: SettingsTab | null
+  pendingMemoryPath: string | null
   activeModal: string | null
   toasts: Toast[]
 
@@ -83,6 +64,7 @@ type UIStore = {
   setReviewSidebarOpen: (open: boolean) => void
   setActiveView: (view: ActiveView) => void
   setPendingSettingsTab: (tab: SettingsTab | null) => void
+  setPendingMemoryPath: (path: string | null) => void
   openModal: (id: string) => void
   closeModal: () => void
   addToast: (toast: Omit<Toast, 'id'>) => void
@@ -97,6 +79,7 @@ export const useUIStore = create<UIStore>((set) => ({
   reviewSidebarOpen: false,
   activeView: 'code',
   pendingSettingsTab: null,
+  pendingMemoryPath: null,
   activeModal: null,
   toasts: [],
 
@@ -108,9 +91,8 @@ export const useUIStore = create<UIStore>((set) => ({
 
   toggleTheme: () => {
     set((state) => {
-      const cycle: ThemeMode[] = ['light', 'dark', 'system']
-      const idx = cycle.indexOf(state.theme)
-      const next = cycle[(idx + 1) % cycle.length]!
+      const currentIndex = THEME_MODES.indexOf(state.theme)
+      const next = THEME_MODES[(currentIndex + 1) % THEME_MODES.length] ?? 'white'
       applyTheme(next)
       try { localStorage.setItem(THEME_STORAGE_KEY, next) } catch { /* noop */ }
       return { theme: next }
@@ -123,6 +105,7 @@ export const useUIStore = create<UIStore>((set) => ({
   setReviewSidebarOpen: (open) => set({ reviewSidebarOpen: open }),
   setActiveView: (view) => set({ activeView: view }),
   setPendingSettingsTab: (tab) => set({ pendingSettingsTab: tab }),
+  setPendingMemoryPath: (path) => set({ pendingMemoryPath: path }),
   openModal: (id) => set({ activeModal: id }),
   closeModal: () => set({ activeModal: null }),
 

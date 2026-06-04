@@ -139,6 +139,18 @@ describe('anthropicToOpenaiChat', () => {
     expect(anthropicToOpenaiChat(highReq).reasoning_effort).toBe('high')
   })
 
+  test('passes explicit thinking toggle for DeepSeek-compatible chat proxies', () => {
+    const req: AnthropicRequest = {
+      model: 'deepseek-v4-flash',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'Hi' }],
+      thinking: { type: 'disabled' },
+    }
+
+    expect(anthropicToOpenaiChat(req).thinking).toBeUndefined()
+    expect(anthropicToOpenaiChat(req, { passThinkingToggle: true }).thinking).toEqual({ type: 'disabled' })
+  })
+
   test('assistant message with tool_use', () => {
     const req: AnthropicRequest = {
       model: 'gpt-4',
@@ -159,6 +171,32 @@ describe('anthropicToOpenaiChat', () => {
     expect(msg.tool_calls![0].id).toBe('tc_1')
     expect(msg.tool_calls![0].function.name).toBe('get_weather')
     expect(msg.tool_calls![0].function.arguments).toBe('{"city":"NYC"}')
+  })
+
+  test('round-trips assistant thinking as reasoning_content for DeepSeek tool-call history', () => {
+    const req: AnthropicRequest = {
+      model: 'deepseek-v4-pro',
+      max_tokens: 100,
+      messages: [{
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Need the date first. ' },
+          { type: 'thinking', thinking: 'Then call weather.' },
+          { type: 'text', text: 'Let me check that.' },
+          { type: 'tool_use', id: 'call_1', name: 'get_weather', input: { location: 'Hangzhou' } },
+        ],
+      }],
+    }
+
+    const defaultResult = anthropicToOpenaiChat(req)
+    expect(defaultResult.messages[0].reasoning_content).toBeUndefined()
+
+    const result = anthropicToOpenaiChat(req, { roundTripReasoningContent: true })
+    const msg = result.messages[0]
+    expect(msg.role).toBe('assistant')
+    expect(msg.content).toBe('Let me check that.')
+    expect(msg.reasoning_content).toBe('Need the date first. Then call weather.')
+    expect(msg.tool_calls?.[0].id).toBe('call_1')
   })
 
   test('user message with tool_result', () => {
@@ -193,6 +231,26 @@ describe('anthropicToOpenaiChat', () => {
     const content = result.messages[0].content as Array<{ type: string; image_url?: { url: string } }>
     expect(content[0].type).toBe('image_url')
     expect(content[0].image_url!.url).toBe('data:image/png;base64,abc123')
+  })
+
+  test('text-only chat endpoints omit image payloads instead of emitting image_url parts', () => {
+    const req: AnthropicRequest = {
+      model: 'deepseek-v4-pro',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What is in this screenshot?' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc123' } },
+        ],
+      }],
+    }
+    const result = anthropicToOpenaiChat(req, { imageContentMode: 'text_only' })
+    expect(result.messages[0].content).toBe(
+      'What is in this screenshot?\n[Image omitted: this OpenAI-compatible chat endpoint only supports text content.]',
+    )
+    expect(JSON.stringify(result)).not.toContain('image_url')
+    expect(JSON.stringify(result)).not.toContain('abc123')
   })
 })
 
@@ -249,6 +307,41 @@ describe('openaiChatToAnthropic', () => {
       expect(result.content[0].id).toBe('call_1')
       expect(result.content[0].name).toBe('get_weather')
       expect(result.content[0].input).toEqual({ city: 'NYC' })
+    }
+  })
+
+  test('tool_calls response preserves object arguments from local proxies', () => {
+    const res: OpenAIChatResponse = {
+      id: 'chatcmpl-write',
+      object: 'chat.completion',
+      created: 1234567890,
+      model: 'gpt-4',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call_write',
+            type: 'function',
+            function: {
+              name: 'Write',
+              arguments: { file_path: '/tmp/issue-288.txt', content: 'ok' },
+            },
+          }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    }
+
+    const result = openaiChatToAnthropic(res, 'gpt-4')
+    expect(result.content[0].type).toBe('tool_use')
+    if (result.content[0].type === 'tool_use') {
+      expect(result.content[0].name).toBe('Write')
+      expect(result.content[0].input).toEqual({
+        file_path: '/tmp/issue-288.txt',
+        content: 'ok',
+      })
     }
   })
 
@@ -440,6 +533,32 @@ describe('openaiResponsesToAnthropic', () => {
     if (result.content[0].type === 'tool_use') {
       expect(result.content[0].id).toBe('call_1')
       expect(result.content[0].input).toEqual({ q: 'test' })
+    }
+  })
+
+  test('function_call preserves object arguments from local proxies', () => {
+    const res: OpenAIResponsesResponse = {
+      id: 'resp_write',
+      object: 'response',
+      created_at: 0,
+      model: 'gpt-4o',
+      status: 'completed',
+      output: [{
+        type: 'function_call',
+        id: 'fc_write',
+        call_id: 'call_write',
+        name: 'Write',
+        arguments: { file_path: '/tmp/issue-288.txt', content: 'ok' },
+      }],
+    }
+
+    const result = openaiResponsesToAnthropic(res, 'gpt-4o')
+    expect(result.content[0].type).toBe('tool_use')
+    if (result.content[0].type === 'tool_use') {
+      expect(result.content[0].input).toEqual({
+        file_path: '/tmp/issue-288.txt',
+        content: 'ok',
+      })
     }
   })
 
