@@ -34,6 +34,7 @@ import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './se
 import { normalizeZoomFactor } from './services/zoom'
 import { resolveRendererEntry } from './services/rendererEntry'
 import { writeWindowSmokeSnapshot } from './services/windowSmoke'
+import { installSkillsFromPaths } from './services/skills'
 import {
   installWindowLifecycle,
   readWindowState,
@@ -359,6 +360,8 @@ async function handleCommandInvoke(payload: unknown): Promise<unknown> {
     case 'git_review_action':
       await gitReviewAction(args)
       return null
+    case 'install_skills_from_paths':
+      return installSkillsFromPaths(args ?? {})
     case 'plugin:notification|is_permission_granted':
       return notificationPermissionState(Notification) === 'granted'
     case 'plugin:notification|request_permission':
