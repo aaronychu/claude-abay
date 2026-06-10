@@ -1,9 +1,9 @@
 use std::{
     collections::{HashMap, VecDeque},
-    fs,
+    fs::{self, File},
     io::{Error as IoError, ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Command as StdCommand, Stdio},
     str,
     sync::{
@@ -299,8 +299,8 @@ fn dir_has_portable_data(dir: &Path) -> bool {
         WINDOW_STATE_FILE,
         TERMINAL_CONFIG_FILE,
     ]
-        .iter()
-        .any(|f| dir.join(f).is_file())
+    .iter()
+    .any(|f| dir.join(f).is_file())
         || dir.join("Cache").is_dir()
         || dir.join("EBWebView").is_dir()
         || dir.join("projects").is_dir()
@@ -465,6 +465,14 @@ struct GitReviewSnapshot {
     files: Vec<GitReviewFile>,
     total_additions: u32,
     total_deletions: u32,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SkillInstallResult {
+    installed: Vec<String>,
+    skipped: Vec<String>,
+    skills_dir: String,
 }
 
 #[derive(Clone)]
@@ -1161,6 +1169,317 @@ fn set_terminal_bash_path(app: AppHandle, path: Option<String>) -> Result<(), St
     let mut config = TerminalConfig::load(&app);
     config.bash_path = normalize_terminal_bash_path(path)?;
     config.save(&app)
+}
+
+fn claude_config_home_dir() -> Result<PathBuf, String> {
+    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot resolve home directory for skills".to_string())?;
+    Ok(PathBuf::from(home).join(".claude"))
+}
+
+fn sanitize_skill_name(name: &str) -> String {
+    let sanitized = name
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['-', '.', '_'])
+        .to_string();
+
+    if sanitized.is_empty() {
+        "imported-skill".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination)
+        .map_err(|err| format!("create {}: {err}", destination.display()))?;
+
+    let entries =
+        fs::read_dir(source).map_err(|err| format!("read {}: {err}", source.display()))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("read directory entry: {err}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("read file type for {}: {err}", entry.path().display()))?;
+        let target = destination.join(entry.file_name());
+
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &target)
+                .map_err(|err| format!("copy {}: {err}", target.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn replace_dir(source: &Path, destination: &Path) -> Result<(), String> {
+    if destination.exists() {
+        fs::remove_dir_all(destination)
+            .map_err(|err| format!("remove existing {}: {err}", destination.display()))?;
+    }
+    copy_dir_recursive(source, destination)
+}
+
+fn install_skill_dir(
+    source: &Path,
+    skills_dir: &Path,
+    installed: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+) -> Result<(), String> {
+    if source.join("SKILL.md").is_file() {
+        let name = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(sanitize_skill_name)
+            .unwrap_or_else(|| "imported-skill".to_string());
+        replace_dir(source, &skills_dir.join(&name))?;
+        installed.push(name);
+        return Ok(());
+    }
+
+    let mut child_count = 0_usize;
+    let entries =
+        fs::read_dir(source).map_err(|err| format!("read {}: {err}", source.display()))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("read directory entry: {err}"))?;
+        let path = entry.path();
+        if !path.is_dir() || !path.join("SKILL.md").is_file() {
+            continue;
+        }
+        child_count += 1;
+        install_skill_dir(&path, skills_dir, installed, skipped)?;
+    }
+
+    if child_count == 0 {
+        skipped.push(format!(
+            "{} (missing SKILL.md)",
+            source
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("folder")
+        ));
+    }
+
+    Ok(())
+}
+
+fn clean_zip_path(name: &str) -> Option<Vec<String>> {
+    let path = Path::new(name);
+    let mut parts = Vec::new();
+
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => {
+                let part = value.to_string_lossy();
+                if part.is_empty() || part == "__MACOSX" || part == ".DS_Store" {
+                    return None;
+                }
+                parts.push(part.to_string());
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts)
+    }
+}
+
+fn zip_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .map(sanitize_skill_name)
+        .unwrap_or_else(|| "imported-skill".to_string())
+}
+
+fn analyze_zip(path: &Path) -> Result<(bool, Vec<String>), String> {
+    let file = File::open(path).map_err(|err| format!("open zip {}: {err}", path.display()))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|err| format!("read zip {}: {err}", path.display()))?;
+    let mut root_has_skill = false;
+    let mut top_skill_dirs = Vec::<String>::new();
+
+    for index in 0..archive.len() {
+        let file = archive
+            .by_index(index)
+            .map_err(|err| format!("read zip entry: {err}"))?;
+        let Some(parts) = clean_zip_path(file.name()) else {
+            continue;
+        };
+
+        if parts.len() == 1 && parts[0] == "SKILL.md" {
+            root_has_skill = true;
+        } else if parts.len() == 2 && parts[1] == "SKILL.md" && !top_skill_dirs.contains(&parts[0])
+        {
+            top_skill_dirs.push(parts[0].clone());
+        }
+    }
+
+    Ok((root_has_skill, top_skill_dirs))
+}
+
+fn extract_zip(
+    zip_path: &Path,
+    destination: &Path,
+    top_filter: Option<&str>,
+    strip_top: bool,
+) -> Result<(), String> {
+    if destination.exists() {
+        fs::remove_dir_all(destination)
+            .map_err(|err| format!("remove existing {}: {err}", destination.display()))?;
+    }
+    fs::create_dir_all(destination)
+        .map_err(|err| format!("create {}: {err}", destination.display()))?;
+
+    let file =
+        File::open(zip_path).map_err(|err| format!("open zip {}: {err}", zip_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|err| format!("read zip {}: {err}", zip_path.display()))?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|err| format!("read zip entry: {err}"))?;
+        let Some(mut parts) = clean_zip_path(entry.name()) else {
+            continue;
+        };
+
+        if let Some(top) = top_filter {
+            if parts.first().map(String::as_str) != Some(top) {
+                continue;
+            }
+        }
+
+        if strip_top {
+            if parts.len() <= 1 {
+                continue;
+            }
+            parts.remove(0);
+        }
+
+        let output_path = parts
+            .iter()
+            .fold(destination.to_path_buf(), |acc, part| acc.join(part));
+        if entry.is_dir() {
+            fs::create_dir_all(&output_path)
+                .map_err(|err| format!("create {}: {err}", output_path.display()))?;
+            continue;
+        }
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("create {}: {err}", parent.display()))?;
+        }
+        let mut output = File::create(&output_path)
+            .map_err(|err| format!("create {}: {err}", output_path.display()))?;
+        std::io::copy(&mut entry, &mut output)
+            .map_err(|err| format!("extract {}: {err}", output_path.display()))?;
+    }
+
+    Ok(())
+}
+
+fn install_skill_zip(
+    path: &Path,
+    skills_dir: &Path,
+    installed: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+) -> Result<(), String> {
+    let (root_has_skill, top_skill_dirs) = analyze_zip(path)?;
+
+    if root_has_skill {
+        let name = zip_stem(path);
+        extract_zip(path, &skills_dir.join(&name), None, false)?;
+        installed.push(name);
+        return Ok(());
+    }
+
+    if !top_skill_dirs.is_empty() {
+        for top in top_skill_dirs {
+            let name = sanitize_skill_name(&top);
+            extract_zip(path, &skills_dir.join(&name), Some(&top), true)?;
+            installed.push(name);
+        }
+        return Ok(());
+    }
+
+    skipped.push(format!(
+        "{} (zip missing SKILL.md)",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("archive.zip")
+    ));
+    Ok(())
+}
+
+#[tauri::command]
+fn install_skills_from_paths(paths: Vec<String>) -> Result<SkillInstallResult, String> {
+    let skills_dir = claude_config_home_dir()?.join("skills");
+    fs::create_dir_all(&skills_dir)
+        .map_err(|err| format!("create skills directory {}: {err}", skills_dir.display()))?;
+
+    let mut installed = Vec::new();
+    let mut skipped = Vec::new();
+
+    for raw_path in paths {
+        let path = PathBuf::from(raw_path.trim());
+        if !path.exists() {
+            skipped.push(format!("{} (not found)", path.display()));
+            continue;
+        }
+
+        if path.is_dir() {
+            install_skill_dir(&path, &skills_dir, &mut installed, &mut skipped)?;
+        } else if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        {
+            install_skill_zip(&path, &skills_dir, &mut installed, &mut skipped)?;
+        } else {
+            skipped.push(format!(
+                "{} (unsupported file type)",
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("file")
+            ));
+        }
+    }
+
+    installed.sort();
+    installed.dedup();
+    skipped.sort();
+    skipped.dedup();
+
+    Ok(SkillInstallResult {
+        installed,
+        skipped,
+        skills_dir: skills_dir.to_string_lossy().to_string(),
+    })
 }
 
 fn run_git(cwd: &PathBuf, args: &[&str]) -> Result<String, String> {
@@ -2353,10 +2672,8 @@ mod tests {
     #[test]
     fn terminal_cwd_defaults_to_portable_config_dir_when_present() {
         let original = std::env::var_os("CLAUDE_CONFIG_DIR");
-        let dir = std::env::temp_dir().join(format!(
-            "cchh-terminal-portable-cwd-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("cchh-terminal-portable-cwd-{}", std::process::id()));
         fs::create_dir_all(&dir).expect("create portable config dir");
         std::env::set_var("CLAUDE_CONFIG_DIR", &dir);
 
@@ -2374,10 +2691,8 @@ mod tests {
 
     #[test]
     fn portable_data_detection_includes_cli_state_dirs() {
-        let root = std::env::temp_dir().join(format!(
-            "cchh-portable-data-detect-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("cchh-portable-data-detect-{}", std::process::id()));
         let skills = root.join("skills");
         fs::create_dir_all(&skills).expect("create skills dir");
 
@@ -2543,6 +2858,7 @@ pub fn run() {
             terminal_kill,
             git_review_snapshot,
             git_review_action,
+            install_skills_from_paths,
             get_terminal_bash_path,
             set_terminal_bash_path,
             macos_notification_permission_state,

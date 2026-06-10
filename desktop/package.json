@@ -5,8 +5,8 @@
   "description": "Desktop coding agent workbench for Claude Code A+BAY.",
   "homepage": "https://github.com/aaronychu/claude-abay",
   "author": {
-    "name": "NanmiCoder",
-    "email": "relakkes@gmail.com"
+    "name": "aaronychu",
+    "email": "aaronychu@users.noreply.github.com"
   },
   "type": "module",
   "main": "electron-dist/main.cjs",
@@ -57,7 +57,7 @@
       ],
       "icon": "src-tauri/icons",
       "category": "Development",
-      "maintainer": "NanmiCoder <relakkes@gmail.com>"
+      "maintainer": "aaronychu <aaronychu@users.noreply.github.com>"
     },
     "publish": [
       {

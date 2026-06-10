@@ -170,24 +170,19 @@ async function initializeBrowserServerUrl(fallbackUrl: string) {
     rememberStoredH5ServerUrl(requestedUrl)
   }
 
-  const localFallbackCandidate = browserH5Runtime
-    ? null
-    : getBrowserLocalFallbackUrl(requestedUrl, fallbackUrl)
   try {
-    await waitForHealth(requestedUrl, localFallbackCandidate ? 1 : 30)
+    await waitForHealth(requestedUrl)
   } catch (error) {
     if (browserH5Runtime) {
       clearStoredH5Token()
       throw normalizeBrowserH5Error(error, requestedUrl)
     }
-    if (localFallbackCandidate) {
-      return initializeLocalBrowserServerUrl(localFallbackCandidate, error)
-    }
     throw error
   }
 
   if (!browserH5Runtime) {
-    return initializeHealthyLocalBrowserServerUrl(requestedUrl)
+    await ensureBrowserApiAccessibleWithoutH5(requestedUrl)
+    return requestedUrl
   }
 
   if (!token) {
@@ -217,28 +212,10 @@ async function initializeBrowserServerUrl(fallbackUrl: string) {
   return requestedUrl
 }
 
-async function initializeHealthyLocalBrowserServerUrl(serverUrl: string) {
-  setBaseUrl(serverUrl)
-  setAuthToken(null)
-  await ensureBrowserApiAccessibleWithoutH5(serverUrl)
-  return serverUrl
-}
-
-async function initializeLocalBrowserServerUrl(serverUrl: string, originalError: unknown) {
-  try {
-    setBaseUrl(serverUrl)
-    setAuthToken(null)
-    await waitForHealth(serverUrl)
-    return initializeHealthyLocalBrowserServerUrl(serverUrl)
-  } catch {
-    throw originalError
-  }
-}
-
-async function waitForHealth(serverUrl: string, maxAttempts = 30) {
+async function waitForHealth(serverUrl: string) {
   let lastError: unknown
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  for (let attempt = 0; attempt < 30; attempt++) {
     try {
       const response = await fetch(`${serverUrl}/health`, {
         cache: 'no-store',
@@ -261,9 +238,7 @@ async function waitForHealth(serverUrl: string, maxAttempts = 30) {
       lastError = error
     }
 
-    if (attempt < maxAttempts - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 250))
-    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
   }
 
   throw new Error(
@@ -324,26 +299,6 @@ function getConfiguredBrowserServerUrl(fallbackUrl: string) {
   }
 
   return getSameOriginServerUrl()
-}
-
-function getBrowserLocalFallbackUrl(requestedUrl: string, fallbackUrl: string) {
-  if (hasExplicitDefaultBaseUrl()) {
-    return null
-  }
-
-  const sameOriginUrl = getSameOriginServerUrl()
-  const normalizedFallbackUrl = normalizeServerUrl(fallbackUrl)
-  if (
-    !sameOriginUrl ||
-    !normalizedFallbackUrl ||
-    requestedUrl !== sameOriginUrl ||
-    requestedUrl === normalizedFallbackUrl ||
-    requiresH5AuthForServerUrl(normalizedFallbackUrl)
-  ) {
-    return null
-  }
-
-  return normalizedFallbackUrl
 }
 
 export function isLoopbackHostname(hostname: string) {

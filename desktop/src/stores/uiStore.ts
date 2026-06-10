@@ -49,7 +49,6 @@ type ActiveView = 'code' | 'scheduled' | 'terminal' | 'history' | 'settings'
 type UIStore = {
   theme: ThemeMode
   sidebarOpen: boolean
-  reviewSidebarOpen: boolean
   activeView: ActiveView
   pendingSettingsTab: SettingsTab | null
   pendingMemoryPath: string | null
@@ -60,8 +59,6 @@ type UIStore = {
   toggleTheme: () => void
   toggleSidebar: () => void
   setSidebarOpen: (open: boolean) => void
-  toggleReviewSidebar: () => void
-  setReviewSidebarOpen: (open: boolean) => void
   setActiveView: (view: ActiveView) => void
   setPendingSettingsTab: (tab: SettingsTab | null) => void
   setPendingMemoryPath: (path: string | null) => void
@@ -76,7 +73,6 @@ let toastCounter = 0
 export const useUIStore = create<UIStore>((set) => ({
   theme: getStoredTheme(),
   sidebarOpen: true,
-  reviewSidebarOpen: false,
   activeView: 'code',
   pendingSettingsTab: null,
   pendingMemoryPath: null,
@@ -101,8 +97,6 @@ export const useUIStore = create<UIStore>((set) => ({
 
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
-  toggleReviewSidebar: () => set((s) => ({ reviewSidebarOpen: !s.reviewSidebarOpen })),
-  setReviewSidebarOpen: (open) => set({ reviewSidebarOpen: open }),
   setActiveView: (view) => set({ activeView: view }),
   setPendingSettingsTab: (tab) => set({ pendingSettingsTab: tab }),
   setPendingMemoryPath: (path) => set({ pendingMemoryPath: path }),

@@ -3,7 +3,7 @@
  */
 
 export function corsHeaders(origin?: string | null): Record<string, string> {
-  const allowedOrigin = origin || 'http://localhost:3000'
+  const allowedOrigin = origin || 'http://127.0.0.1:3456'
   return {
     'Access-Control-Allow-Origin': allowedOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
@@ -40,7 +40,20 @@ function isLocalOrigin(origin?: string | null): boolean {
     return true
   }
 
-  return LOCAL_DESKTOP_ORIGINS.has(origin)
+  if (LOCAL_DESKTOP_ORIGINS.has(origin)) {
+    return true
+  }
+
+  try {
+    const url = new URL(origin)
+    const hostname = url.hostname.toLowerCase()
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1')
+    )
+  } catch {
+    return false
+  }
 }
 
 export async function resolveCors(

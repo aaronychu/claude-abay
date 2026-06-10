@@ -363,7 +363,7 @@ export function ActiveSession() {
   if (!activeTabId) return null
 
   return (
-    <div className="flex-1 flex relative overflow-hidden bg-background text-on-surface">
+    <div className="flex-1 flex relative overflow-hidden bg-[var(--color-surface)] text-on-surface">
       <div data-testid="active-session-content-row" className="flex min-h-0 min-w-0 flex-1">
         <div
           data-testid="active-session-chat-column"
@@ -428,7 +428,7 @@ export function ActiveSession() {
                   </>
                 ) : (
                   <>
-                    <img src={publicAssetPath('app-icon.png')} alt="Claude Code A+BAY" className="mb-6 h-24 w-24" />
+                    <img src={publicAssetPath('app-icon.png')} alt="Claude Code A+BAY" className="mb-6 h-24 w-auto max-w-[160px] object-contain" />
                     <h1 className="mb-2 text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)]" style={{ fontFamily: 'var(--font-headline)' }}>
                       {t('empty.title')}
                     </h1>

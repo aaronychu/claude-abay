@@ -572,7 +572,7 @@ export function EmptySession() {
           <img
             src={publicAssetPath('app-icon.png')}
             alt="Claude Code A+BAY"
-            className={isMobileComposer ? 'mb-4 h-16 w-16' : 'mb-6 h-24 w-24'}
+            className={isMobileComposer ? 'mb-4 h-16 w-auto max-w-[96px] object-contain' : 'mb-6 h-24 w-auto max-w-[160px] object-contain'}
           />
           <h1
             className={`mb-2 font-extrabold tracking-tight text-[var(--color-text-primary)] ${
@@ -597,7 +597,7 @@ export function EmptySession() {
         data-testid="empty-session-composer-shell"
         className={`absolute left-0 right-0 z-30 flex justify-center ${
         isMobileComposer
-          ? 'bottom-0 px-3 pb-[calc(env(safe-area-inset-bottom)+10px)]'
+          ? 'bottom-0 bg-[var(--color-surface)] px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2'
           : 'bottom-4 px-8'
       }`}
       >

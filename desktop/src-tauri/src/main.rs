@@ -121,8 +121,8 @@ fn determine_startup_portable_dir() -> Option<PathBuf> {
             "window-state.json",
             "terminal-config.json",
         ]
-            .iter()
-            .any(|f| dir.join(f).is_file())
+        .iter()
+        .any(|f| dir.join(f).is_file())
             || dir.join("Cache").is_dir()
             || dir.join("EBWebView").is_dir()
             || dir.join("projects").is_dir()

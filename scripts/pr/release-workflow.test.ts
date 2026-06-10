@@ -81,10 +81,10 @@ describe('release desktop workflow', () => {
     }
 
     expect(desktopPackage.description).toBeTruthy()
-    expect(desktopPackage.homepage).toBe('https://github.com/NanmiCoder/cc-haha')
-    expect(desktopPackage.author?.name).toBe('NanmiCoder')
-    expect(desktopPackage.author?.email).toBe('relakkes@gmail.com')
-    expect(desktopPackage.build?.linux?.maintainer).toBe('NanmiCoder <relakkes@gmail.com>')
+    expect(desktopPackage.homepage).toBe('https://github.com/aaronychu/claude-abay')
+    expect(desktopPackage.author?.name).toBe('aaronychu')
+    expect(desktopPackage.author?.email).toBe('aaronychu@users.noreply.github.com')
+    expect(desktopPackage.build?.linux?.maintainer).toBe('aaronychu <aaronychu@users.noreply.github.com>')
   })
 
   test('release workflow requires macOS Gatekeeper launch approval for signed builds', () => {
@@ -208,23 +208,23 @@ describe('release desktop workflow', () => {
       }
     }
     const version = desktopPackage.version
-    expect(desktopPackage.build.artifactName).toBe('Claude-Code-Haha-${version}-${os}-${arch}.${ext}')
+    expect(desktopPackage.build.artifactName).toBe('Claude-Code-ABAY-${version}-${os}-${arch}.${ext}')
 
     const expectedReleaseAssets = [
-      `Claude-Code-Haha-${version}-mac-arm64.dmg`,
-      `Claude-Code-Haha-${version}-mac-arm64.dmg.blockmap`,
-      `Claude-Code-Haha-${version}-mac-arm64.zip`,
-      `Claude-Code-Haha-${version}-mac-arm64.zip.blockmap`,
-      `Claude-Code-Haha-${version}-mac-x64.dmg`,
-      `Claude-Code-Haha-${version}-mac-x64.dmg.blockmap`,
-      `Claude-Code-Haha-${version}-mac-x64.zip`,
-      `Claude-Code-Haha-${version}-mac-x64.zip.blockmap`,
-      `Claude-Code-Haha-${version}-linux-x86_64.AppImage`,
-      `Claude-Code-Haha-${version}-linux-amd64.deb`,
-      `Claude-Code-Haha-${version}-linux-arm64.AppImage`,
-      `Claude-Code-Haha-${version}-linux-arm64.deb`,
-      `Claude-Code-Haha-${version}-win-x64.exe`,
-      `Claude-Code-Haha-${version}-win-x64.exe.blockmap`,
+      `Claude-Code-ABAY-${version}-mac-arm64.dmg`,
+      `Claude-Code-ABAY-${version}-mac-arm64.dmg.blockmap`,
+      `Claude-Code-ABAY-${version}-mac-arm64.zip`,
+      `Claude-Code-ABAY-${version}-mac-arm64.zip.blockmap`,
+      `Claude-Code-ABAY-${version}-mac-x64.dmg`,
+      `Claude-Code-ABAY-${version}-mac-x64.dmg.blockmap`,
+      `Claude-Code-ABAY-${version}-mac-x64.zip`,
+      `Claude-Code-ABAY-${version}-mac-x64.zip.blockmap`,
+      `Claude-Code-ABAY-${version}-linux-x86_64.AppImage`,
+      `Claude-Code-ABAY-${version}-linux-amd64.deb`,
+      `Claude-Code-ABAY-${version}-linux-arm64.AppImage`,
+      `Claude-Code-ABAY-${version}-linux-arm64.deb`,
+      `Claude-Code-ABAY-${version}-win-x64.exe`,
+      `Claude-Code-ABAY-${version}-win-x64.exe.blockmap`,
     ]
     const namespacedMetadata = [
       'latest-mac-macOS-ARM64.yml',
@@ -268,15 +268,15 @@ describe('release desktop workflow', () => {
     const buildJob = extractJob(workflow, 'build')
     const publishJob = extractJob(workflow, 'publish-release')
     const expectedFiles = [
-      'Claude-Code-Haha-${APP_VERSION}-mac-arm64.dmg',
-      'Claude-Code-Haha-${APP_VERSION}-mac-arm64.zip',
-      'Claude-Code-Haha-${APP_VERSION}-mac-x64.dmg',
-      'Claude-Code-Haha-${APP_VERSION}-mac-x64.zip',
-      'Claude-Code-Haha-${APP_VERSION}-linux-x86_64.AppImage',
-      'Claude-Code-Haha-${APP_VERSION}-linux-amd64.deb',
-      'Claude-Code-Haha-${APP_VERSION}-linux-arm64.AppImage',
-      'Claude-Code-Haha-${APP_VERSION}-linux-arm64.deb',
-      'Claude-Code-Haha-${APP_VERSION}-win-x64.exe',
+      'Claude-Code-ABAY-${APP_VERSION}-mac-arm64.dmg',
+      'Claude-Code-ABAY-${APP_VERSION}-mac-arm64.zip',
+      'Claude-Code-ABAY-${APP_VERSION}-mac-x64.dmg',
+      'Claude-Code-ABAY-${APP_VERSION}-mac-x64.zip',
+      'Claude-Code-ABAY-${APP_VERSION}-linux-x86_64.AppImage',
+      'Claude-Code-ABAY-${APP_VERSION}-linux-amd64.deb',
+      'Claude-Code-ABAY-${APP_VERSION}-linux-arm64.AppImage',
+      'Claude-Code-ABAY-${APP_VERSION}-linux-arm64.deb',
+      'Claude-Code-ABAY-${APP_VERSION}-win-x64.exe',
     ]
 
     for (const file of expectedFiles) {
@@ -308,8 +308,8 @@ describe('release desktop workflow', () => {
     expect(desktopPackage.build.publish).toEqual([
       {
         provider: 'github',
-        owner: 'NanmiCoder',
-        repo: 'cc-haha',
+        owner: 'aaronychu',
+        repo: 'claude-abay',
       },
     ])
     expect(desktopPackage.build.mac?.publish).toBeUndefined()

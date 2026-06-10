@@ -256,6 +256,8 @@ describe('Sidebar', () => {
     expect(useTabStore.getState().activeTabId).toBe('session-new-1')
     expect(screen.getByRole('complementary')).not.toHaveAttribute('data-desktop-drag-region')
     expect(screen.getByTestId('sidebar-title-region')).toHaveAttribute('data-desktop-drag-region')
+    expect(screen.getByAltText('Claude Code A+BAY').closest('[data-desktop-drag-region]')).toBeInTheDocument()
+    expect(screen.queryByTitle('GitHub')).not.toBeInTheDocument()
   })
 
   it('groups sessions by project and expands overflow rows', () => {
@@ -904,7 +906,10 @@ describe('Sidebar', () => {
 
     fireEvent.contextMenu(screen.getByRole('button', { name: /Open Session/ }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const menu = screen.getByRole('button', { name: 'Delete' }).closest('[data-sidebar-floating-menu]')
+    expect(menu).toHaveStyle({ zIndex: '80' })
+
+    fireEvent.click(within(menu as HTMLElement).getByRole('button', { name: 'Delete' }))
 
     expect(deleteSession).not.toHaveBeenCalled()
     const dialog = screen.getByRole('dialog')

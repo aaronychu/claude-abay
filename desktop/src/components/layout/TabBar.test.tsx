@@ -817,6 +817,7 @@ describe('TabBar', () => {
 
     expect(screen.queryByRole('button', { name: 'Show Browser' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Hide Browser' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Review changes' })).not.toBeInTheDocument()
   })
 
   it('hides the browser toolbar button for non-session tabs', async () => {

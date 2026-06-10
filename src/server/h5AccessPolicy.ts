@@ -20,7 +20,15 @@ export function isLoopbackHost(hostname: string): boolean {
 
 function isLocalDesktopOrNavigationOrigin(origin: string | null): boolean {
   if (!origin) return true
-  return LOCAL_DESKTOP_ORIGINS.has(origin)
+  if (LOCAL_DESKTOP_ORIGINS.has(origin)) return true
+
+  try {
+    const url = new URL(origin)
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      isLoopbackHost(url.hostname)
+  } catch {
+    return false
+  }
 }
 
 function isFilesystemCapabilityPath(pathname: string): boolean {

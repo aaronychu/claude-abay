@@ -185,28 +185,23 @@ describe('desktopRuntime browser H5 bootstrap', () => {
     consoleError.mockRestore()
   })
 
-  it('falls back to the default local API when the dev origin serves the Vite SPA', async () => {
-    globalThis.fetch = vi.fn()
-      .mockResolvedValueOnce(new Response('<!doctype html>', {
+  it('does not treat a Vite SPA fallback response as a desktop server healthcheck', async () => {
+    vi.useFakeTimers()
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response('<!doctype html>', {
         status: 200,
         headers: { 'content-type': 'text/html' },
-      }))
-      .mockResolvedValueOnce(healthOkResponse())
-      .mockResolvedValueOnce(Response.json({ ok: true })) as typeof fetch
+      }),
+    ) as typeof fetch
 
-    await expect(initializeDesktopServerUrl()).resolves.toBe('http://127.0.0.1:3456')
+    const startup = expect(initializeDesktopServerUrl()).rejects.toThrow(
+      `Server healthcheck failed: healthcheck returned non-JSON response from ${window.location.origin}/health`,
+    )
+    await vi.runAllTimersAsync()
 
-    expect(clientMocks.setBaseUrl).toHaveBeenLastCalledWith('http://127.0.0.1:3456')
+    await startup
+    expect(clientMocks.setBaseUrl).toHaveBeenLastCalledWith(window.location.origin)
     expect(clientMocks.setAuthToken).toHaveBeenLastCalledWith(null)
-    expect(globalThis.fetch).toHaveBeenCalledWith(`${window.location.origin}/health`, {
-      cache: 'no-store',
-    })
-    expect(globalThis.fetch).toHaveBeenCalledWith('http://127.0.0.1:3456/health', {
-      cache: 'no-store',
-    })
-    expect(globalThis.fetch).toHaveBeenCalledWith('http://127.0.0.1:3456/api/status', {
-      cache: 'no-store',
-    })
   })
 
   it('prefers an explicit Vite desktop server URL over the dev server origin', async () => {

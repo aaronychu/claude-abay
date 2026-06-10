@@ -11,7 +11,6 @@ import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
 import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
-import { useUIStore } from '../../stores/uiStore'
 import { useTranslation } from '../../i18n'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { WindowControls, showWindowControls } from './WindowControls'
@@ -78,8 +77,6 @@ export function TabBar() {
   const isTerminalPanelOpen = useTerminalPanelStore((state) =>
     activeTabId && isActiveSessionTab ? state.isPanelOpen(activeTabId) : false,
   )
-  const reviewSidebarOpen = useUIStore((s) => s.reviewSidebarOpen)
-  const toggleReviewSidebar = useUIStore((s) => s.toggleReviewSidebar)
 
   const moveTab = useTabStore((s) => s.moveTab)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -393,17 +390,6 @@ export function TabBar() {
             active={isWorkspacePanelOpen}
           />
         )}
-        <button
-          type="button"
-          className={`review-toggle-button ${reviewSidebarOpen ? 'review-toggle-button-active' : ''}`}
-          onClick={toggleReviewSidebar}
-          title="Review changes"
-          aria-label="Review changes"
-          aria-pressed={reviewSidebarOpen}
-        >
-          <span className="material-symbols-outlined text-[15px]">fact_check</span>
-          <span>Review</span>
-        </button>
       </div>
 
       {isDesktopRuntime && (

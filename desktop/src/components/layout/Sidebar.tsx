@@ -604,30 +604,26 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
       <div
         data-testid="sidebar-title-region"
         data-desktop-drag-region
-        className={`px-3 pb-2 ${isDesktopRuntime && !isWindows ? 'pt-[44px]' : 'pt-3'}`}
+        className={`sidebar-title-region px-3 pb-2 ${isDesktopRuntime && !isWindows ? 'pt-[44px]' : 'pt-3'}`}
       >
         <div className={`flex ${expanded ? 'items-center justify-between gap-3' : 'flex-col items-center gap-2'}`}>
-          <div className={`flex min-w-0 items-center ${expanded ? 'gap-2.5' : 'justify-center'}`}>
-            <img src={publicAssetPath('app-icon.png')} alt="" className="h-8 w-8 flex-shrink-0" />
-            <span
-              className={`sidebar-copy ${expanded ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} text-[13px] font-semibold tracking-tight text-[var(--color-text-primary)]`}
-              style={{ fontFamily: 'var(--font-headline)' }}
-            >
-              Claude Code <span className="text-[var(--color-primary-container)]">Haha</span>
-            </span>
+          <div
+            data-desktop-drag-region
+            className={`sidebar-title-brand flex min-w-0 flex-1 items-center ${expanded ? 'gap-2.5' : 'justify-center'}`}
+          >
+            <img
+              src={publicAssetPath(expanded ? 'app-title.png' : 'app-icon.png')}
+              alt="Claude Code A+BAY"
+              draggable={false}
+              className={expanded
+                ? 'h-8 max-w-[190px] flex-shrink object-contain object-left'
+                : 'h-8 w-auto max-w-[32px] flex-shrink-0 object-contain'}
+            />
           </div>
-          <div className={`flex items-center ${expanded ? 'gap-1.5' : 'flex-col gap-2'}`}>
-            <a
-              href="https://github.com/aaronychu/claude-abay"
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`sidebar-copy ${expanded ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} inline-flex items-center justify-center rounded-md p-1 text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]`}
-              title="GitHub"
-              tabIndex={expanded ? undefined : -1}
-              aria-hidden={!expanded}
-            >
-              <GitHubIcon />
-            </a>
+          <div
+            data-desktop-no-drag-region
+            className={`sidebar-title-controls flex items-center ${expanded ? 'gap-1.5' : 'flex-col gap-2'}`}
+          >
             {isMobile ? (
               <button
                 type="button"
@@ -1050,8 +1046,9 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
 
       {contextMenu && (
         <div
+          data-sidebar-floating-menu
           className="fixed z-50 min-w-[140px] rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] py-1"
-          style={{ left: contextMenu.x, top: contextMenu.y, boxShadow: 'var(--shadow-dropdown)' }}
+          style={{ left: contextMenu.x, top: contextMenu.y, zIndex: 80, boxShadow: 'var(--shadow-dropdown)' }}
         >
           <button
             onClick={() => {
@@ -1078,9 +1075,10 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
         const hidden = hiddenProjectKeys.has(project.key)
         return (
           <div
+            data-sidebar-floating-menu
             role="menu"
             className="fixed z-50 min-w-[230px] overflow-hidden rounded-[18px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-2 shadow-[var(--shadow-dropdown)]"
-            style={positionProjectMenu(projectContextMenu.x, projectContextMenu.y)}
+            style={{ ...positionProjectMenu(projectContextMenu.x, projectContextMenu.y), zIndex: 80 }}
             onClick={(event) => event.stopPropagation()}
           >
             <ProjectMenuItem
@@ -1321,12 +1319,12 @@ function ProjectHeaderMenu({
   t: ReturnType<typeof useTranslation>
 }) {
   const width = type === 'sort' ? 230 : type === 'create' ? 250 : 270
-  const style: React.CSSProperties = { left: x, top: y, width, boxShadow: 'var(--shadow-dropdown)' }
+  const style: React.CSSProperties = { left: x, top: y, width, zIndex: 80, boxShadow: 'var(--shadow-dropdown)' }
   const className = 'fixed z-50 overflow-hidden rounded-[18px] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-2 shadow-[var(--shadow-dropdown)]'
 
   if (type === 'create') {
     return (
-      <div role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
+      <div data-sidebar-floating-menu role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
         <HeaderMenuItem icon={<SquarePen size={18} aria-hidden="true" />} onClick={onCreateBlank}>
           {t('sidebar.newBlankProject')}
         </HeaderMenuItem>
@@ -1339,7 +1337,7 @@ function ProjectHeaderMenu({
 
   if (type === 'organize') {
     return (
-      <div role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
+      <div data-sidebar-floating-menu role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
         <HeaderMenuItem icon={<Folder size={18} aria-hidden="true" />} checked={organization === 'project'} onClick={() => onSetOrganization('project')}>
           {t('sidebar.organizeByProject')}
         </HeaderMenuItem>
@@ -1355,7 +1353,7 @@ function ProjectHeaderMenu({
 
   if (type === 'sort') {
     return (
-      <div role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
+      <div data-sidebar-floating-menu role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
         <HeaderMenuItem icon={<Clock size={18} aria-hidden="true" />} checked={sortBy === 'createdAt'} onClick={() => onSetSortBy('createdAt')}>
           {t('sidebar.sortByCreatedAt')}
         </HeaderMenuItem>
@@ -1367,7 +1365,7 @@ function ProjectHeaderMenu({
   }
 
   return (
-    <div role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
+    <div data-sidebar-floating-menu role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
       <HeaderMenuItem
         icon={<Folder size={18} aria-hidden="true" />}
         trailing
@@ -1897,14 +1895,6 @@ function formatRelativeTime(
   const day = Math.floor(hr / 24)
   if (day < 30) return t('session.timeDays', { n: day })
   return new Intl.DateTimeFormat(undefined, { month: 'numeric', day: 'numeric' }).format(date)
-}
-
-function GitHubIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
-    </svg>
-  )
 }
 
 function PlusIcon() {

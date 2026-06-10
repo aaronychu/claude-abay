@@ -988,6 +988,24 @@ button, input, textarea, select, a, [role="button"] {
   -webkit-app-region: no-drag;
 }
 
+.sidebar-title-region,
+.sidebar-title-brand {
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+.sidebar-title-brand img {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.sidebar-title-controls,
+.sidebar-title-controls * {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
 /* Custom shadow from prototype */
 .custom-shadow {
   box-shadow: var(--shadow-dropdown);
@@ -1033,11 +1051,19 @@ button, input, textarea, select, a, [role="button"] {
   overflow-x: hidden;
 }
 
+.app-shell > #content-area {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+}
+
 .app-shell-backdrop {
   background: var(--color-overlay-scrim);
 }
 
 .sidebar-shell {
+  position: relative;
+  z-index: 10;
   width: var(--sidebar-width);
   flex-shrink: 0;
   overflow: hidden;
@@ -1076,9 +1102,51 @@ button, input, textarea, select, a, [role="button"] {
   min-width: var(--sidebar-width);
   background-image: var(--sidebar-panel-bg-image);
   background-repeat: no-repeat;
+  backdrop-filter: blur(26px) saturate(1.32);
+  -webkit-backdrop-filter: blur(26px) saturate(1.32);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.54);
   transition:
     background-color var(--motion-sidebar-duration) var(--motion-sidebar-easing),
     border-color var(--motion-sidebar-duration) var(--motion-sidebar-easing);
+}
+
+.sidebar-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.48);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.34), transparent 32%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 34%);
+  opacity: 0.8;
+}
+
+.sidebar-panel > :not([data-sidebar-floating-menu]) {
+  position: relative;
+  z-index: 1;
+}
+
+[data-theme="light"] .sidebar-panel,
+[data-theme="white"] .sidebar-panel {
+  border-color: rgba(112, 119, 145, 0.16);
+}
+
+[data-theme="white"] .sidebar-panel::before {
+  border-right-color: rgba(255, 255, 255, 0.56);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.42), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.46), transparent 36%);
+  opacity: 0.86;
+}
+
+[data-theme="dark"] .sidebar-panel::before {
+  border-right-color: rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 36%);
+  opacity: 1;
 }
 
 .sidebar-panel[data-state="closed"] {
@@ -1268,10 +1336,65 @@ button, input, textarea, select, a, [role="button"] {
 
 .sidebar-settings-dock {
   z-index: 30;
-  background-color: var(--color-surface-sidebar);
-  background-image: var(--sidebar-panel-bg-image);
-  background-repeat: no-repeat;
-  background-position: left bottom;
+  overflow: hidden;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-surface-sidebar) 72%, transparent) 0%,
+      color-mix(in srgb, var(--color-surface-sidebar) 92%, transparent) 32%,
+      var(--color-surface-sidebar) 100%
+    );
+  backdrop-filter: blur(18px) saturate(1.18) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.18) !important;
+  border-top-color: color-mix(in srgb, var(--color-border) 42%, transparent);
+}
+
+.sidebar-settings-dock::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.16), transparent 36%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 42%);
+}
+
+.sidebar-settings-dock > * {
+  position: relative;
+  z-index: 1;
+}
+
+[data-theme="light"] .sidebar-settings-dock {
+  background:
+    linear-gradient(180deg, rgba(232, 238, 255, 0.78) 0%, rgba(226, 232, 252, 0.9) 34%, rgba(222, 228, 251, 0.96) 100%);
+  border-top-color: rgba(112, 119, 145, 0.10);
+  backdrop-filter: blur(18px) saturate(1.18) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.18) !important;
+}
+
+[data-theme="white"] .sidebar-settings-dock {
+  background:
+    linear-gradient(180deg, rgba(238, 242, 255, 0.86) 0%, rgba(231, 237, 253, 0.94) 34%, rgba(222, 228, 251, 0.98) 100%);
+  border-top-color: rgba(112, 119, 145, 0.10);
+  backdrop-filter: blur(18px) saturate(1.18) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.18) !important;
+}
+
+[data-theme="dark"] .sidebar-settings-dock {
+  background:
+    linear-gradient(180deg, rgba(16, 18, 26, 0.82) 0%, rgba(14, 16, 23, 0.92) 34%, rgba(10, 11, 16, 0.96) 100%);
+  border-top-color: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px) saturate(1.18) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.18) !important;
+}
+
+[data-theme="dark"] .sidebar-settings-dock::before {
+  border-top-color: rgba(255, 255, 255, 0.055);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.032), transparent 36%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 42%);
 }
 
 .sidebar-scroll-area::-webkit-scrollbar {

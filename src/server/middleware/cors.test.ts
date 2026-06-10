@@ -13,7 +13,7 @@ describe('corsHeaders', () => {
 
   it('allows arbitrary origins while H5 access is open', () => {
     expect(corsHeaders('https://example.com')['Access-Control-Allow-Origin']).toBe('https://example.com')
-    expect(corsHeaders(null)['Access-Control-Allow-Origin']).toBe('http://localhost:3000')
+    expect(corsHeaders(null)['Access-Control-Allow-Origin']).toBe('http://127.0.0.1:3456')
   })
 })
 
@@ -84,16 +84,16 @@ describe('resolveCors', () => {
     }
   })
 
-  it('does not keep loopback browser origins allowed when H5 token mode is active', async () => {
+  it('keeps loopback browser origins allowed when H5 token mode is active', async () => {
     for (const origin of ['http://localhost:5173', 'http://127.0.0.1:5179']) {
       const result = await resolveCors(origin, 'http://192.168.0.20:3456', {
         h5Enabled: true,
         isOriginAllowed: async () => false,
       })
 
-      expect(result.allowed).toBe(false)
-      expect(result.rejected).toBe(true)
-      expect(result.headers['Access-Control-Allow-Origin']).toBeUndefined()
+      expect(result.allowed).toBe(true)
+      expect(result.rejected).toBe(false)
+      expect(result.headers['Access-Control-Allow-Origin']).toBe(origin)
     }
   })
 

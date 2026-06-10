@@ -59,7 +59,7 @@ describe('h5AccessPolicy', () => {
     expect(shouldRequireH5Token({ request, url: new URL(request.url), h5Enabled: true, context: localContext })).toBe(false)
   })
 
-  test('does not trust loopback browser origins for H5 capability routes', () => {
+  test('trusts loopback browser origins for local dev H5 capability routes', () => {
     for (const pathname of [
       '/api/status',
       '/proxy/openai/v1/chat/completions',
@@ -70,24 +70,24 @@ describe('h5AccessPolicy', () => {
       const request = req(`http://127.0.0.1:3456${pathname}`, {
         headers: { Origin: 'http://localhost:5173' },
       })
-      expect(classifyH5Request(request, new URL(request.url), localContext)).toBe('h5-browser')
-      expect(shouldRequireH5Token({ request, url: new URL(request.url), h5Enabled: true, context: localContext })).toBe(true)
+      expect(classifyH5Request(request, new URL(request.url), localContext)).toBe('local-trusted')
+      expect(shouldRequireH5Token({ request, url: new URL(request.url), h5Enabled: true, context: localContext })).toBe(false)
       expect(shouldBlockDisabledH5Access({
         request,
         url: new URL(request.url),
         h5Enabled: false,
         explicitAuthRequired: false,
         context: localContext,
-      })).toBe(true)
+      })).toBe(false)
     }
   })
 
-  test('does not trust adapter requests from browser origins', () => {
+  test('trusts adapter requests from loopback browser origins', () => {
     const request = req('http://127.0.0.1:3456/api/adapters', {
       headers: { Origin: 'http://localhost:5173' },
     })
-    expect(classifyH5Request(request, new URL(request.url), localContext)).toBe('h5-browser')
-    expect(shouldRequireH5Token({ request, url: new URL(request.url), h5Enabled: true, context: localContext })).toBe(true)
+    expect(classifyH5Request(request, new URL(request.url), localContext)).toBe('local-trusted')
+    expect(shouldRequireH5Token({ request, url: new URL(request.url), h5Enabled: true, context: localContext })).toBe(false)
   })
 
   test('does not trust spoofed loopback hosts from remote clients', () => {

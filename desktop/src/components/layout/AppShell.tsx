@@ -15,7 +15,6 @@ import {
 } from '../../lib/desktopRuntime'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { TabBar } from './TabBar'
-import { ReviewSidebar } from './ReviewSidebar'
 import { StartupErrorView } from './StartupErrorView'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -32,7 +31,6 @@ function isChatTab(tab: Tab | undefined) {
 export function AppShell() {
   const fetchSettings = useSettingsStore((s) => s.fetchAll)
   const sidebarOpen = useUIStore((s) => s.sidebarOpen)
-  const reviewSidebarOpen = useUIStore((s) => s.reviewSidebarOpen)
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen)
   const [ready, setReady] = useState(false)
@@ -222,7 +220,6 @@ export function AppShell() {
       <main
         id="content-area"
         data-sidebar-state={effectiveSidebarOpen ? 'open' : 'closed'}
-        data-review-sidebar-state={reviewSidebarOpen && !isMobileShell ? 'open' : 'closed'}
         className={`min-w-0 flex-1 flex flex-col overflow-hidden${isMobileShell ? ' app-shell-main--mobile' : ''}`}
       >
         {isMobileShell ? (
@@ -275,7 +272,6 @@ export function AppShell() {
         {!isMobileShell ? <TabBar /> : null}
         <ContentRouter />
       </main>
-      {reviewSidebarOpen && !isMobileShell ? <ReviewSidebar /> : null}
       <ToastContainer />
       <UpdateChecker />
     </div>

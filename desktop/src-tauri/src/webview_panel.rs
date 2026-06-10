@@ -1,5 +1,7 @@
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, WebviewBuilder, WebviewUrl};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, WebviewBuilder, WebviewUrl,
+};
 
 const PREVIEW_LABEL: &str = "preview";
 
@@ -148,7 +150,9 @@ pub fn preview_message<R: Runtime>(app: AppHandle<R>, raw: String) -> Result<(),
 /// 宿主 → 页面：在子 webview 内 eval 一段 JS。
 #[tauri::command]
 pub async fn preview_eval<R: Runtime>(app: AppHandle<R>, js: String) -> Result<(), String> {
-    let webview = app.get_webview(PREVIEW_LABEL).ok_or_else(|| "preview not open".to_string())?;
+    let webview = app
+        .get_webview(PREVIEW_LABEL)
+        .ok_or_else(|| "preview not open".to_string())?;
     webview.eval(&js).map_err(|e| e.to_string())
 }
 
@@ -158,13 +162,22 @@ mod tests {
 
     #[test]
     fn accepts_http_and_https() {
-        assert_eq!(normalize_preview_url("http://localhost:5173/").unwrap(), "http://localhost:5173/");
-        assert_eq!(normalize_preview_url("https://example.com").unwrap(), "https://example.com");
+        assert_eq!(
+            normalize_preview_url("http://localhost:5173/").unwrap(),
+            "http://localhost:5173/"
+        );
+        assert_eq!(
+            normalize_preview_url("https://example.com").unwrap(),
+            "https://example.com"
+        );
     }
 
     #[test]
     fn trims_whitespace() {
-        assert_eq!(normalize_preview_url("  http://127.0.0.1:8080  ").unwrap(), "http://127.0.0.1:8080");
+        assert_eq!(
+            normalize_preview_url("  http://127.0.0.1:8080  ").unwrap(),
+            "http://127.0.0.1:8080"
+        );
     }
 
     #[test]

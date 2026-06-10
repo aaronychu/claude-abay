@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSkillStore } from '../../stores/skillStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTranslation } from '../../i18n'
+import { skillsApi, type SkillInstallResult } from '../../api/skills'
+import { getDesktopHost } from '../../lib/desktopHost'
 import type { SkillMeta, SkillSource } from '../../types/skill'
 
 const SOURCE_ORDER: SkillSource[] = ['user', 'project', 'plugin', 'mcp', 'bundled']
@@ -35,7 +37,11 @@ export function SkillList() {
   const activeSession = sessions.find((session) => session.id === activeSessionId)
   const currentWorkDir = activeSession?.workDir || undefined
   const [searchQuery, setSearchQuery] = useState('')
+  const [isInstalling, setIsInstalling] = useState(false)
+  const [installResult, setInstallResult] = useState<SkillInstallResult | null>(null)
+  const [installError, setInstallError] = useState<string | null>(null)
   const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase()
+  const canInstallSkills = getDesktopHost().isDesktop && getDesktopHost().capabilities.dialogs
 
   useEffect(() => {
     fetchSkills(currentWorkDir)
@@ -80,6 +86,60 @@ export function SkillList() {
     [grouped],
   )
 
+  const installSummary = useMemo(() => {
+    if (!installResult) return null
+    const installedCount = installResult.installed.length
+    const skippedCount = installResult.skipped.length
+    if (installedCount > 0 && skippedCount > 0) {
+      return t('settings.skills.installMixed', {
+        installed: String(installedCount),
+        skipped: String(skippedCount),
+      })
+    }
+    if (installedCount > 0) {
+      return t('settings.skills.installSuccess', { count: String(installedCount) })
+    }
+    return t('settings.skills.installSkipped', { count: String(skippedCount) })
+  }, [installResult, t])
+
+  async function installSelectedSkills(kind: 'folders' | 'zips') {
+    const host = getDesktopHost()
+    if (!host.isDesktop || !host.capabilities.dialogs) {
+      setInstallError(t('settings.skills.installDesktopOnly'))
+      return
+    }
+
+    setIsInstalling(true)
+    setInstallError(null)
+    setInstallResult(null)
+
+    try {
+      const selected = await host.dialogs.open(
+        kind === 'folders'
+          ? {
+              title: t('settings.skills.chooseFolders'),
+              directory: true,
+              multiple: true,
+            }
+          : {
+              title: t('settings.skills.chooseZips'),
+              multiple: true,
+              filters: [{ name: 'Zip', extensions: ['zip'] }],
+            },
+      )
+      const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
+      if (paths.length === 0) return
+
+      const result = await skillsApi.installFromPaths(paths)
+      setInstallResult(result)
+      await fetchSkills(currentWorkDir)
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsInstalling(false)
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="flex justify-center py-12">
@@ -92,24 +152,81 @@ export function SkillList() {
     return <div className="text-sm text-[var(--color-error)] py-4">{error}</div>
   }
 
+  const installPanel = (
+    <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-5 py-4">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
+            <span className="material-symbols-outlined text-[18px] text-[var(--color-brand)]">
+              upload_file
+            </span>
+            {t('settings.skills.installTitle')}
+          </div>
+          <p className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
+            {t('settings.skills.installDescription')}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void installSelectedSkills('folders')}
+            disabled={!canInstallSkills || isInstalling}
+            className="inline-flex h-9 items-center gap-2 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-xs font-medium text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[16px]">create_new_folder</span>
+            {t('settings.skills.addFolders')}
+          </button>
+          <button
+            type="button"
+            onClick={() => void installSelectedSkills('zips')}
+            disabled={!canInstallSkills || isInstalling}
+            className="inline-flex h-9 items-center gap-2 rounded-full bg-[var(--color-text-primary)] px-3 text-xs font-medium text-[var(--color-surface)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[16px]">folder_zip</span>
+            {isInstalling ? t('settings.skills.installing') : t('settings.skills.addZips')}
+          </button>
+        </div>
+      </div>
+      {(installSummary || installError) && (
+        <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${
+          installError
+            ? 'border-[var(--color-error)]/30 bg-[var(--color-error)]/10 text-[var(--color-error)]'
+            : 'border-[var(--color-success)]/25 bg-[var(--color-success-container)] text-[var(--color-success)]'
+        }`}
+        >
+          {installError || installSummary}
+          {installResult?.installed.length ? (
+            <span className="ml-2 text-[var(--color-text-secondary)]">
+              {installResult.installed.join(', ')}
+            </span>
+          ) : null}
+        </div>
+      )}
+    </section>
+  )
+
   if (skills.length === 0) {
     return (
-      <div className="text-center py-12 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-6">
-        <span className="material-symbols-outlined text-[40px] text-[var(--color-text-tertiary)] mb-2 block">
-          auto_awesome
-        </span>
-        <p className="text-sm text-[var(--color-text-tertiary)]">
-          {t('settings.skills.empty')}
-        </p>
-        <p className="text-xs text-[var(--color-text-tertiary)] mt-1">
-          {t('settings.skills.emptyHint')}
-        </p>
+      <div className="flex flex-col gap-4 min-w-0">
+        {installPanel}
+        <div className="text-center py-12 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-6">
+          <span className="material-symbols-outlined text-[40px] text-[var(--color-text-tertiary)] mb-2 block">
+            auto_awesome
+          </span>
+          <p className="text-sm text-[var(--color-text-tertiary)]">
+            {t('settings.skills.empty')}
+          </p>
+          <p className="text-xs text-[var(--color-text-tertiary)] mt-1">
+            {t('settings.skills.emptyHint')}
+          </p>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="flex flex-col gap-6 min-w-0">
+      {installPanel}
       <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] overflow-hidden">
         <div className="grid gap-4 px-5 py-5 min-w-0 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)] xl:items-end">
           <div className="min-w-0">
