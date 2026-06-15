@@ -7,7 +7,7 @@
  */
 
 import type { ServerWebSocket } from 'bun'
-import type { ClientMessage, ServerMessage } from './events.js'
+import type { ClientMessage, ServerMessage, StreamingFallbackCause } from './events.js'
 import * as os from 'node:os'
 import {
   ConversationStartupError,
@@ -34,6 +34,7 @@ import {
   LOCAL_COMMAND_STDOUT_TAG,
 } from '../../constants/xml.js'
 import { shouldCreateWorktreeForSessionLaunch } from '../services/repositoryLaunchService.js'
+import { getDisconnectGraceMs } from './disconnectGraceConfig.js'
 
 const settingsService = new SettingsService()
 const providerService = new ProviderService()
@@ -53,9 +54,15 @@ const sessionSlashCommands = new Map<string, SessionSlashCommand[]>()
  * Timers for delayed session cleanup after client disconnect.
  * If a client reconnects before the timer fires, the timer is cancelled.
  */
-const CLIENT_DISCONNECT_CLEANUP_MS = 30_000
 const PENDING_PERMISSION_DISCONNECT_CLEANUP_MS = 30 * 60_000
 const sessionCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
+/**
+ * Per-session removers for the turn-completion watcher (issue #764). When the
+ * last client disconnects while a turn is still running, we let the turn finish
+ * in the background instead of killing the CLI, then start the idle grace timer
+ * once the result arrives. The remover is also cleared on reconnect/cleanup.
+ */
+const sessionDisconnectWatchers = new Map<string, () => void>()
 
 /**
  * Track sessions where user requested stop — suppress the CLI_ERROR that
@@ -76,11 +83,20 @@ const sessionTitleState = new Map<string, {
   generationSeq: number
 }>()
 
-const runtimeOverrides = new Map<string, {
+type RuntimeOverride = {
   providerId: string | null
   modelId: string
   effort?: string
-}>()
+}
+
+type ActiveUserTurnState = {
+  messageSent: boolean
+}
+
+const runtimeOverrides = new Map<string, RuntimeOverride>()
+const activeUserTurns = new Map<string, ActiveUserTurnState>()
+const deferredRuntimeRestarts = new Map<string, RuntimeOverride>()
+const deferredPermissionModes = new Map<string, string>()
 
 const runtimeTransitionPromises = new Map<string, Promise<void>>()
 const sessionStartupPromises = new Map<string, Promise<void>>()
@@ -157,6 +173,9 @@ export const handleWebSocket = {
       clearTimeout(pendingTimer)
       sessionCleanupTimers.delete(sessionId)
     }
+    // Cancel any "let the running turn finish, then clean up" watcher too —
+    // the session is observed again (issue #764).
+    cancelSessionDisconnectWatcher(sessionId)
 
     addActiveClient(sessionId, ws)
     if (prewarmPendingSessions.has(sessionId) || prewarmedSessions.has(sessionId)) {
@@ -252,20 +271,17 @@ export const handleWebSocket = {
       return
     }
 
-    computerUseApprovalService.cancelSession(sessionId)
+    // No clients left. A turn that is still running must finish in the
+    // background (issue #764) — never kill it just because a phone locked its
+    // screen. Defer cleanup until the turn completes, then apply the idle
+    // grace period. Sessions that are already idle go straight to the timer.
+    if (isSessionTurnActive(sessionId)) {
+      console.log(`[WS] Session ${sessionId} still running after disconnect; keeping CLI alive until the turn finishes`)
+      watchTurnCompletionForCleanup(sessionId)
+      return
+    }
 
-    // Schedule delayed cleanup. Sessions waiting on user input need a longer
-    // grace period so transient renderer disconnects do not abort the prompt.
-    const cleanupDelayMs = getDisconnectCleanupDelayMs(sessionId)
-    const cleanupTimer = setTimeout(() => {
-      sessionCleanupTimers.delete(sessionId)
-      if (!hasActiveClients(sessionId)) {
-        console.log(`[WS] Session ${sessionId} not reconnected after ${cleanupDelayMs}ms, stopping CLI subprocess`)
-        conversationService.stopSession(sessionId)
-        cleanupSessionRuntimeState(sessionId)
-      }
-    }, cleanupDelayMs)
-    sessionCleanupTimers.set(sessionId, cleanupTimer)
+    scheduleDisconnectCleanup(sessionId)
   },
 
   drain(ws: ServerWebSocket<WebSocketData>) {
@@ -306,8 +322,14 @@ async function handleUserMessage(
   // Send thinking status
   sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
 
+  const activeTurn: ActiveUserTurnState = { messageSent: false }
+  activeUserTurns.set(sessionId, activeTurn)
+
   const initialRuntimeTransition = await waitForRuntimeTransitionBeforeUserTurn(ws, sessionId)
-  if (!initialRuntimeTransition.ok) return
+  if (!initialRuntimeTransition.ok) {
+    clearActiveUserTurn(sessionId, activeTurn)
+    return
+  }
   if (initialRuntimeTransition.waited) {
     sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
   }
@@ -357,6 +379,7 @@ async function handleUserMessage(
         err instanceof ConversationStartupError ? err.retryable : false,
     })
     sendMessage(ws, { type: 'status', state: 'idle' })
+    clearActiveUserTurn(sessionId, activeTurn)
     return
   }
 
@@ -366,6 +389,7 @@ async function handleUserMessage(
       sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
     }
   } else {
+    clearActiveUserTurn(sessionId, activeTurn)
     return
   }
 
@@ -387,6 +411,7 @@ async function handleUserMessage(
       return shouldForwardCurrentTurnLocalCommand(cliMsg)
     },
   })
+  const removeActiveTurnOutputCallback = bindActiveUserTurnCompletion(ws, sessionId, activeTurn)
 
   const sent = await conversationService.sendMessage(
     sessionId,
@@ -394,6 +419,8 @@ async function handleUserMessage(
     message.attachments
   )
   if (!sent) {
+    removeActiveTurnOutputCallback()
+    clearActiveUserTurn(sessionId, activeTurn)
     removeTitleOutputCallback?.()
     discardActiveTitleTurn(sessionId, titleTurnNumber)
     sendMessage(ws, {
@@ -406,6 +433,72 @@ async function handleUserMessage(
   }
 
   userMessageSent = true
+  activeTurn.messageSent = true
+}
+
+function clearActiveUserTurn(sessionId: string, activeTurn: ActiveUserTurnState): void {
+  if (activeUserTurns.get(sessionId) === activeTurn) {
+    activeUserTurns.delete(sessionId)
+  }
+}
+
+function bindActiveUserTurnCompletion(
+  ws: ServerWebSocket<WebSocketData>,
+  sessionId: string,
+  activeTurn: ActiveUserTurnState,
+): () => void {
+  const callback = (cliMsg: any) => {
+    if (!activeTurn.messageSent || cliMsg?.type !== 'result') return
+
+    conversationService.removeOutputCallback(sessionId, callback)
+    clearActiveUserTurn(sessionId, activeTurn)
+    applyDeferredPermissionModeAfterActiveTurn(ws, sessionId)
+    applyDeferredRuntimeRestartAfterActiveTurn(ws, sessionId)
+  }
+
+  conversationService.onOutput(sessionId, callback)
+  return () => conversationService.removeOutputCallback(sessionId, callback)
+}
+
+function shouldDeferRuntimeRestartForActiveTurn(sessionId: string): boolean {
+  return activeUserTurns.get(sessionId)?.messageSent === true
+}
+
+function applyDeferredPermissionModeAfterActiveTurn(
+  ws: ServerWebSocket<WebSocketData>,
+  sessionId: string,
+): void {
+  const deferredMode = deferredPermissionModes.get(sessionId)
+  if (!deferredMode) return
+
+  deferredPermissionModes.delete(sessionId)
+  void enqueueRuntimeTransition(sessionId, async () => {
+    if (!conversationService.hasSession(sessionId)) return
+    await applyPermissionModeToActiveSession(ws, sessionId, deferredMode)
+  })
+}
+
+function applyDeferredRuntimeRestartAfterActiveTurn(
+  ws: ServerWebSocket<WebSocketData>,
+  sessionId: string,
+): void {
+  const deferred = deferredRuntimeRestarts.get(sessionId)
+  if (!deferred) return
+
+  deferredRuntimeRestarts.delete(sessionId)
+  void enqueueRuntimeTransition(sessionId, async () => {
+    const currentOverride = runtimeOverrides.get(sessionId)
+    if (
+      !currentOverride ||
+      currentOverride.providerId !== deferred.providerId ||
+      currentOverride.modelId !== deferred.modelId ||
+      currentOverride.effort !== deferred.effort ||
+      !conversationService.hasSession(sessionId)
+    ) {
+      return
+    }
+    await restartSessionWithRuntimeConfig(ws, sessionId)
+  })
 }
 
 async function handleDesktopClearCommand(
@@ -484,6 +577,8 @@ function handlePermissionResponse(
     message.allowed,
     message.rule,
     message.updatedInput,
+    message.denyMessage,
+    message.permissionUpdates,
   )
   console.log(`[WS] Permission response for ${message.requestId}: ${message.allowed}`)
 }
@@ -529,21 +624,41 @@ async function handleSetPermissionMode(
   await applyPermissionModeToActiveSession(ws, sessionId, message.mode)
 }
 
+/**
+ * 决定一次权限模式切换是否需要重启 CLI 子进程。
+ *
+ * 只有"进入 bypassPermissions"才需要重启：CLI 必须带 --dangerously-skip-permissions
+ * 启动，否则运行时的 set_permission_mode → bypassPermissions 会被拒绝，所以重启子进程
+ * 带上该 flag。
+ *
+ * 反过来"从 bypassPermissions 切到更严格的模式"**不要**重启：此时进程已带 flag，运行时
+ * 降级即可。更关键的是——重启会把进程内的 prePlanMode 记忆冲掉：若 bypass→plan 走重启，
+ * 新 CLI 直接以 plan 启动、prePlanMode 为空，ExitPlanMode 只能恢复成 default 而非进入前的
+ * bypassPermissions。保持进程不变、走 setPermissionMode 做进程内 transition，CLI 才会像 TUI
+ * 一样栈存 prePlanMode='bypassPermissions'，退出 plan 时正确恢复 bypass。
+ */
+export function shouldRestartForPermissionMode(
+  currentMode: string,
+  mode: string,
+): boolean {
+  if (currentMode === mode) return false
+  return mode === 'bypassPermissions'
+}
+
 async function applyPermissionModeToActiveSession(
   ws: ServerWebSocket<WebSocketData>,
   sessionId: string,
   mode: string,
 ): Promise<void> {
   const currentMode = conversationService.getSessionPermissionMode(sessionId)
-  if (currentMode === mode) return
+  if (shouldDeferRuntimeRestartForActiveTurn(sessionId)) {
+    deferredPermissionModes.set(sessionId, mode)
+    await persistSessionPermissionMode(sessionId, mode)
+    return
+  }
 
-  // Switching to/from bypassPermissions requires the CLI to be (re)started with
-  // --dangerously-skip-permissions. The CLI rejects a runtime set_permission_mode
-  // to bypassPermissions if it wasn't launched with that flag.  Rather than just
-  // sending the SDK message (which would silently fail), restart the CLI subprocess
-  // with the correct arguments so the new permission mode takes effect.
-  const needsRestart =
-    mode === 'bypassPermissions' || currentMode === 'bypassPermissions'
+  if (currentMode === mode) return
+  const needsRestart = shouldRestartForPermissionMode(currentMode, mode)
 
   if (needsRestart) {
     void enqueueRuntimeTransition(sessionId, () =>
@@ -605,6 +720,12 @@ async function handleSetRuntimeConfig(
     sessionId,
     (runtimeOverrideVersions.get(sessionId) ?? 0) + 1,
   )
+
+  if (shouldDeferRuntimeRestartForActiveTurn(sessionId)) {
+    deferredRuntimeRestarts.set(sessionId, nextOverride)
+    await persistSessionRuntimeConfig(sessionId, nextOverride)
+    return
+  }
 
   if (conversationService.hasSession(sessionId)) {
     await enqueueRuntimeTransition(sessionId, async () => {
@@ -1062,10 +1183,14 @@ function cleanupStreamState(sessionId: string) {
 }
 
 function cleanupSessionRuntimeState(sessionId: string) {
+  cancelSessionDisconnectWatcher(sessionId)
   cleanupStreamState(sessionId)
   sessionSlashCommands.delete(sessionId)
   sessionTitleState.delete(sessionId)
   runtimeOverrides.delete(sessionId)
+  activeUserTurns.delete(sessionId)
+  deferredRuntimeRestarts.delete(sessionId)
+  deferredPermissionModes.delete(sessionId)
   runtimeTransitionPromises.delete(sessionId)
   sessionStartupPromises.delete(sessionId)
   lastResolvedStartupWorkDirs.delete(sessionId)
@@ -1217,12 +1342,15 @@ async function ensureCliSessionStarted(
     const workDir = await resolveSessionWorkDir(sessionId)
     lastResolvedStartupWorkDirs.set(sessionId, workDir)
     const runtimeSettings = await getRuntimeSettings(sessionId)
+    const startupSettings = reason === 'prewarm_session'
+      ? { ...runtimeSettings, resumeInterruptedTurn: false }
+      : runtimeSettings
     const sdkUrl =
       `ws://${ws.data.serverHost}:${ws.data.serverPort}/sdk/${sessionId}` +
       `?token=${encodeURIComponent(crypto.randomUUID())}`
     await sendRepositoryStartupStatus(ws, sessionId, reason)
     console.log(`[WS] Starting CLI for ${sessionId} due to ${reason}`)
-    await conversationService.startSession(sessionId, workDir, sdkUrl, runtimeSettings)
+    await conversationService.startSession(sessionId, workDir, sdkUrl, startupSettings)
   })()
 
   sessionStartupPromises.set(sessionId, startup)
@@ -1363,6 +1491,14 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
         }
       }
 
+      const replayText = extractReplayUserText(cliMsg)
+      if (replayText) {
+        messages.push({
+          type: 'user_message_replay',
+          content: replayText,
+        })
+      }
+
       return messages
     }
 
@@ -1456,8 +1592,10 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
               }
 
               // JSON parse failed — defer to the assistant message which
-              // carries the complete, already-parsed tool input.
-              console.warn(
+              // carries the complete, already-parsed tool input. This is the
+              // normal streaming partial-input case, not a fault: keep it at
+              // debug so it doesn't surface as a diagnostics warning.
+              console.debug(
                 `[WS] Tool input JSON parse failed for ${toolBlock.toolName} (${toolBlock.toolUseId}), deferring to assistant message`,
               )
               streamState.pendingToolBlocks.set(toolBlock.toolUseId, {
@@ -1554,6 +1692,9 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
         const apiRetryMessage = toApiRetryServerMessage(cliMsg)
         return apiRetryMessage ? [apiRetryMessage] : []
       }
+      if (subtype === 'streaming_fallback') {
+        return [toStreamingFallbackServerMessage(cliMsg)]
+      }
       if (subtype === 'init') {
         // CLI 初始化完成 — 缓存 slash commands 并发送模型信息
         // NOTE: Do NOT send status:idle here — the CLI init fires while
@@ -1594,6 +1735,14 @@ export function translateCliMessage(cliMsg: any, sessionId: string): ServerMessa
             state: 'compacting',
             verb: 'Compacting conversation',
           }]
+        }
+        // CLI 在权限模式变化时也会 enqueue 一条 status 事件（status:null +
+        // permissionMode），用于把恢复后的真实权限（如 ExitPlanMode 退出 plan、
+        // Shift+Tab）广播给前端。它带 status:null 但**不是** thinking 信号，
+        // 必须在下面的 null→thinking 兜底之前拦截，否则字段会被丢弃，桌面端
+        // 选择器就会一直卡在"计划模式"。
+        if (typeof cliMsg.permissionMode === 'string') {
+          return [{ type: 'permission_mode_changed', mode: cliMsg.permissionMode }]
         }
         if (cliMsg.status == null) {
           return [{ type: 'status', state: 'thinking', verb: 'Thinking' }]
@@ -1756,6 +1905,21 @@ function toApiRetryServerMessage(cliMsg: any): ServerMessage | null {
   }
 }
 
+const STREAMING_FALLBACK_CAUSES: ReadonlySet<StreamingFallbackCause> = new Set([
+  'watchdog',
+  'stream_error',
+  '404_stream_creation',
+])
+
+function toStreamingFallbackServerMessage(cliMsg: any): ServerMessage {
+  // 未识别的 cause 兜底为 unknown 而不是丢消息：提示本身比成因重要。
+  const cause: StreamingFallbackCause =
+    typeof cliMsg.cause === 'string' && STREAMING_FALLBACK_CAUSES.has(cliMsg.cause as StreamingFallbackCause)
+      ? (cliMsg.cause as StreamingFallbackCause)
+      : 'unknown'
+  return { type: 'streaming_fallback', cause }
+}
+
 function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage) {
   ws.send(JSON.stringify(message))
 }
@@ -1764,10 +1928,78 @@ function sendError(ws: ServerWebSocket<WebSocketData>, message: string, code: st
   sendMessage(ws, { type: 'error', message, code })
 }
 
+/**
+ * Idle disconnect cleanup delay. A session waiting on a pending permission
+ * keeps the long 30-minute window so a transient renderer disconnect does not
+ * abort a prompt the user is about to answer. Otherwise we honor the
+ * user-configured grace period (issue #764).
+ */
 function getDisconnectCleanupDelayMs(sessionId: string): number {
   return conversationService.getPendingPermissionRequests(sessionId).length > 0
     ? PENDING_PERMISSION_DISCONNECT_CLEANUP_MS
-    : CLIENT_DISCONNECT_CLEANUP_MS
+    : getDisconnectGraceMs()
+}
+
+/**
+ * Whether the session is mid-turn (a user message was sent and no result has
+ * arrived yet). Such a turn must not be killed on disconnect.
+ */
+function isSessionTurnActive(sessionId: string): boolean {
+  return activeUserTurns.get(sessionId)?.messageSent === true
+}
+
+/**
+ * Start the idle grace timer for a disconnected, idle session. If no client
+ * reconnects before it fires, the CLI subprocess is stopped.
+ */
+function scheduleDisconnectCleanup(sessionId: string): void {
+  computerUseApprovalService.cancelSession(sessionId)
+
+  const existing = sessionCleanupTimers.get(sessionId)
+  if (existing) clearTimeout(existing)
+
+  const cleanupDelayMs = getDisconnectCleanupDelayMs(sessionId)
+  const cleanupTimer = setTimeout(() => {
+    sessionCleanupTimers.delete(sessionId)
+    if (!hasActiveClients(sessionId)) {
+      console.log(`[WS] Session ${sessionId} not reconnected after ${cleanupDelayMs}ms, stopping CLI subprocess`)
+      conversationService.stopSession(sessionId)
+      cleanupSessionRuntimeState(sessionId)
+    }
+  }, cleanupDelayMs)
+  sessionCleanupTimers.set(sessionId, cleanupTimer)
+}
+
+/**
+ * Keep a still-running session alive after the last client leaves, and start
+ * the idle grace timer only once the current turn completes (issue #764). If a
+ * client reconnects first, cancelSessionDisconnectWatcher() tears this down.
+ */
+function watchTurnCompletionForCleanup(sessionId: string): void {
+  cancelSessionDisconnectWatcher(sessionId)
+
+  const onComplete = (cliMsg: any) => {
+    if (cliMsg?.type !== 'result') return
+    cancelSessionDisconnectWatcher(sessionId)
+    // The turn finished while still unobserved — fall back to the idle timer.
+    if (!hasActiveClients(sessionId)) {
+      scheduleDisconnectCleanup(sessionId)
+    }
+  }
+
+  conversationService.onOutput(sessionId, onComplete)
+  sessionDisconnectWatchers.set(sessionId, () => {
+    conversationService.removeOutputCallback(sessionId, onComplete)
+  })
+}
+
+/** Remove any pending turn-completion watcher for a session. */
+function cancelSessionDisconnectWatcher(sessionId: string): void {
+  const remove = sessionDisconnectWatchers.get(sessionId)
+  if (remove) {
+    remove()
+    sessionDisconnectWatchers.delete(sessionId)
+  }
 }
 
 function replayPendingPermissionRequests(
@@ -1995,6 +2227,39 @@ function isCompactSummaryMessageContent(content: unknown): content is string {
       'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.',
     )
   )
+}
+
+function hasToolResultBlock(content: unknown): boolean {
+  return Array.isArray(content) &&
+    content.some((block) =>
+      Boolean(block) &&
+      typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'tool_result')
+}
+
+function extractReplayUserText(cliMsg: any): string | null {
+  if (cliMsg?.isReplay !== true) return null
+  const content = cliMsg.message?.content
+  if (isCompactSummaryMessageContent(content)) return null
+  if (hasToolResultBlock(content)) return null
+  if (extractLocalCommandOutput(content)) return null
+
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content
+        .flatMap((block) => {
+          if (!block || typeof block !== 'object') return []
+          const typedBlock = block as { type?: unknown; text?: unknown }
+          return typedBlock.type === 'text' && typeof typedBlock.text === 'string'
+            ? [typedBlock.text]
+            : []
+        })
+        .join('\n')
+      : ''
+
+  const trimmed = text.trim()
+  return trimmed || null
 }
 
 function addActiveClient(
@@ -2407,9 +2672,11 @@ export function getActiveSessionIds(): string[] {
 export function __resetWebSocketHandlerStateForTests(): void {
   for (const timer of sessionCleanupTimers.values()) clearTimeout(timer)
   for (const timer of prewarmIdleTimers.values()) clearTimeout(timer)
+  for (const remove of sessionDisconnectWatchers.values()) remove()
   activeSessions.clear()
   clientOutputCallbacks.clear()
   sessionCleanupTimers.clear()
+  sessionDisconnectWatchers.clear()
   prewarmPendingSessions.clear()
   prewarmedSessions.clear()
   prewarmIdleTimers.clear()
@@ -2417,4 +2684,9 @@ export function __resetWebSocketHandlerStateForTests(): void {
 
 export function __markPrewarmPendingForTests(sessionId: string): void {
   prewarmPendingSessions.add(sessionId)
+}
+
+/** Test hook: mark a session as mid-turn so disconnect keeps the CLI alive. */
+export function __markActiveTurnForTests(sessionId: string): void {
+  activeUserTurns.set(sessionId, { messageSent: true })
 }

@@ -4,6 +4,7 @@ import {
   SCHEDULED_TAB_ID,
   SETTINGS_TAB_ID,
   TERMINAL_TAB_PREFIX,
+  TRACE_TAB_PREFIX,
   useTabStore,
   type TabType,
 } from '../stores/tabStore'
@@ -30,13 +31,14 @@ import type { SessionListItem } from '../types/session'
 import type { ActiveGoalState } from '../types/chat'
 import { useMobileViewport } from '../hooks/useMobileViewport'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
+import { formatTokenCount } from '../lib/formatTokenCount'
 import { publicAssetPath } from '../lib/publicAsset'
 
 const TASK_POLL_INTERVAL_MS = 1000
 const WORKSPACE_RESIZE_STEP = 32
 const TERMINAL_RESIZE_STEP = 24
 const CHAT_COLUMN_WITH_WORKSPACE_CLASS =
-  'min-w-[320px] flex-1 border-r border-[var(--color-border)] bg-[var(--color-surface)]'
+  'min-w-[320px] flex-1 border-[var(--color-border)] bg-[var(--color-surface)]'
 
 function isSessionTabState(activeTabId: string | null, activeTabType: TabType | null | undefined) {
   if (!activeTabId) return false
@@ -44,7 +46,8 @@ function isSessionTabState(activeTabId: string | null, activeTabType: TabType | 
   if (activeTabType) return false
   return activeTabId !== SETTINGS_TAB_ID &&
     activeTabId !== SCHEDULED_TAB_ID &&
-    !activeTabId.startsWith(TERMINAL_TAB_PREFIX)
+    !activeTabId.startsWith(TERMINAL_TAB_PREFIX) &&
+    !activeTabId.startsWith(TRACE_TAB_PREFIX)
 }
 
 function getSessionTerminalCwd(session: SessionListItem | undefined) {
@@ -450,15 +453,17 @@ export function ActiveSession() {
                   }
                 >
                   <div className={showRightPanel ? 'min-w-0 flex-1' : 'mx-auto w-full max-w-[860px] min-w-0'}>
-                    <h1
-                      className={
-                        showRightPanel
-                          ? 'truncate text-[15px] font-bold font-headline leading-tight text-on-surface'
-                          : 'text-lg font-bold font-headline text-on-surface leading-tight'
-                      }
-                    >
-                      {session?.title || t('session.untitled')}
-                    </h1>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <h1
+                        className={
+                          showRightPanel
+                            ? 'min-w-0 flex-1 truncate text-[15px] font-bold font-headline leading-tight text-on-surface'
+                            : 'min-w-0 flex-1 text-lg font-bold font-headline text-on-surface leading-tight'
+                        }
+                      >
+                        {session?.title || t('session.untitled')}
+                      </h1>
+                    </div>
                     <div
                       className={
                         showRightPanel
@@ -475,7 +480,9 @@ export function ActiveSession() {
                       {totalTokens > 0 && (
                         <>
                           <span className="text-[var(--color-outline)]">·</span>
-                          <span>{totalTokens.toLocaleString()} t</span>
+                          <span title={t('common.tokens', { count: totalTokens.toLocaleString() })}>
+                            {t('common.tokens', { count: formatTokenCount(totalTokens) })}
+                          </span>
                         </>
                       )}
                       {lastUpdated && (
@@ -536,7 +543,7 @@ export function ActiveSession() {
             <div
               data-testid="session-terminal-panel"
               className={[
-                'flex shrink-0 flex-col border-t border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]',
+                'flex shrink-0 flex-col border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]',
                 showTerminalPanel ? '' : 'hidden',
               ].join(' ')}
               style={{ height: showTerminalPanel ? terminalPanelHeight : 0 }}
@@ -565,7 +572,7 @@ export function ActiveSession() {
             <WorkspaceResizeHandle />
             <aside
               data-testid="workbench-panel"
-              className="flex h-full shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-surface)]"
+              className="flex h-full shrink-0 flex-col border-[var(--color-border)] bg-[var(--color-surface)]"
               style={{ width: rightPanelWidth, maxWidth: '62%', minWidth: 'min(420px, 54%)' }}
             >
               <WorkbenchPanel sessionId={activeTabId} />

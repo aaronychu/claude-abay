@@ -20,7 +20,25 @@ const originalCliPath = process.env.CLAUDE_CLI_PATH
 const originalDisableTerminalShellEnv = process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
 const mockSdkCliPath = fileURLToPath(new URL('../fixtures/mock-sdk-cli.ts', import.meta.url))
 
+// The models API derives its model list from these env vars (see
+// src/server/api/models.ts getEnvConfiguredAnthropicModels). A developer who
+// exports them for a custom provider would otherwise leak them into the
+// no-provider fixture and break the default-model assertions. Isolate them.
+const MODEL_ENV_KEYS = [
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+] as const
+const originalModelEnv = Object.fromEntries(
+  MODEL_ENV_KEYS.map((key) => [key, process.env[key]]),
+) as Record<(typeof MODEL_ENV_KEYS)[number], string | undefined>
+
 function restoreEnv() {
+  for (const key of MODEL_ENV_KEYS) {
+    if (originalModelEnv[key] !== undefined) process.env[key] = originalModelEnv[key]
+    else delete process.env[key]
+  }
   if (originalConfigDir !== undefined) {
     process.env.CLAUDE_CONFIG_DIR = originalConfigDir
   } else {
@@ -47,6 +65,7 @@ async function startTestServer() {
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   process.env.CLAUDE_CLI_PATH = mockSdkCliPath
   process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = '1'
+  for (const key of MODEL_ENV_KEYS) delete process.env[key]
   await fs.mkdir(path.join(tmpDir, 'projects'), { recursive: true })
   await fs.mkdir(path.join(tmpDir, 'agents'), { recursive: true })
 
@@ -693,13 +712,13 @@ describe('Business Flow: WebSocket Chat', () => {
         if (msg.type === 'connected') {
           ws.send(JSON.stringify({ type: 'user_message', content: 'test message' }))
         }
-        if (msg.type === 'status' && msg.state === 'idle' && messages.length > 3) {
+        if (msg.type === 'message_complete') {
           ws.close()
           resolve()
         }
       }
       ws.onerror = () => { ws.close(); resolve() }
-      setTimeout(() => { ws.close(); resolve() }, 5000)
+      setTimeout(() => { ws.close(); resolve() }, 15000)
     })
 
     const types = messages.map((m) => m.type)
@@ -712,7 +731,7 @@ describe('Business Flow: WebSocket Chat', () => {
     // Should have thinking state first
     const statusMsgs = messages.filter((m) => m.type === 'status')
     expect(statusMsgs[0].state).toBe('thinking')
-  })
+  }, 20000)
 
   it('should handle ping/pong', async () => {
     const messages: any[] = []

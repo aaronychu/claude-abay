@@ -27,6 +27,7 @@ import { ensurePersistentStorageUpgraded } from './services/persistentStorageMig
 import { handleStaticH5Request } from './staticH5.js'
 import { classifyH5Request, shouldBlockDisabledH5Access, shouldRequireH5Token } from './h5AccessPolicy.js'
 import { H5AccessService } from './services/h5AccessService.js'
+import { refreshDisconnectGraceMs } from './ws/disconnectGraceConfig.js'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -125,8 +126,16 @@ function originFromUrl(value: string | null): string | null {
 
 export function startServer(port = PORT, host = HOST) {
   enableConfigs()
-  diagnosticsService.installConsoleCapture()
-  diagnosticsService.installProcessCapture()
+  // Warm the synchronous disconnect-grace cache from managed settings so the
+  // first client disconnect honors the configured value (issue #764).
+  void refreshDisconnectGraceMs()
+  // Don't hijack the global console / process handlers under `bun test`:
+  // a test that boots the server would otherwise route every test-side
+  // console.error/warn into the user's real diagnostics file.
+  if (process.env.NODE_ENV !== 'test') {
+    diagnosticsService.installConsoleCapture()
+    diagnosticsService.installProcessCapture()
+  }
   let serverPort = port
   const localConnectHost =
     host === '0.0.0.0' || host === '127.0.0.1' || host === 'localhost'
@@ -458,20 +467,29 @@ export function startServer(port = PORT, host = HOST) {
 
 let shutdownInProgress: Promise<void> | null = null
 
-function cleanupAllSessions() {
+export async function stopServerRuntimeForShutdown(
+  options: { waitForCli?: boolean } = {},
+): Promise<void> {
+  teamWatcher.stop()
+  cronScheduler.stop()
+
   const active = conversationService.getActiveSessions()
   if (active.length > 0) {
     console.log(`[Server] Shutting down — killing ${active.length} CLI subprocess(es)`)
-    conversationService.stopAllSessions()
+    if (options.waitForCli === false) {
+      conversationService.stopAllSessions()
+    } else {
+      await conversationService.stopAllSessionsAndWait()
+    }
   }
 }
 
+function cleanupAllSessions() {
+  void stopServerRuntimeForShutdown({ waitForCli: false })
+}
+
 async function cleanupAllSessionsAndWait() {
-  const active = conversationService.getActiveSessions()
-  if (active.length > 0) {
-    console.log(`[Server] Shutting down — killing ${active.length} CLI subprocess(es)`)
-    await conversationService.stopAllSessionsAndWait()
-  }
+  await stopServerRuntimeForShutdown({ waitForCli: true })
 }
 
 function shutdownAndExit(signal: 'SIGTERM' | 'SIGINT', exitCode: number) {
