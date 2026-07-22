@@ -109,6 +109,22 @@ describe('chat blocks', () => {
     expect(container.textContent).toContain('Generating content')
   })
 
+  it('shows pending Write line and character progress in the collapsed header', () => {
+    const { container } = render(
+      <ToolCallBlock
+        toolName="Write"
+        input={{ file_path: '/private/tmp/ai-code-novel.md' }}
+        isPending
+        partialInput={'{"file_path":"/private/tmp/ai-code-novel.md","content":"alpha\\nbeta'}
+      />,
+    )
+
+    expect(container.textContent).toContain('Generating content')
+    expect(container.textContent).toContain('2 lines')
+    expect(container.textContent).toContain('10 chars')
+    expect(container.textContent).not.toContain('latest')
+  })
+
   it('expands pending Write tool calls into a live writer preview instead of raw JSON', () => {
     const { container } = render(
       <ToolCallBlock
@@ -125,6 +141,65 @@ describe('chat blocks', () => {
     expect(container.textContent).toContain('# 第一章')
     expect(container.textContent).toContain('正文正在生成')
     expect(container.textContent).not.toContain('"content"')
+  })
+
+  it('formats and wraps pending Bash partial JSON input when expanded', () => {
+    const partialInput = [
+      '{"command":"cat << \'HTMLEOF\' > /tmp/index.html\\n<!DOCTYPE html>\\n<html lang=\\"zh-CN\\">",',
+      '"description":"Create HTML shell command"}',
+    ].join('')
+    const { container } = render(
+      <ToolCallBlock
+        toolName="Bash"
+        input={{ command: 'cat << \'HTMLEOF\' > /tmp/index.html', description: 'Create HTML shell command' }}
+        isPending
+        partialInput={partialInput}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button'))
+
+    expect(container.textContent).toContain('Partial input')
+    expect(container.textContent).toContain('json')
+    expect(container.textContent).toContain('4 lines')
+    expect(container.textContent).not.toContain('1 line')
+
+    const contentWrapper = container.querySelector('[data-code-viewer-content]') as HTMLElement | null
+    expect(contentWrapper?.style.whiteSpace).toBe('pre-wrap')
+    expect(contentWrapper?.style.wordBreak).toBe('break-word')
+  })
+
+  it('shows non-windowed Writer preview stats before the 120-line limit', () => {
+    const { container } = render(
+      <ToolCallBlock
+        toolName="Write"
+        input={{ file_path: '/private/tmp/generated.ts' }}
+        isPending
+        partialInput={'{"file_path":"/private/tmp/generated.ts","content":"alpha\\nbeta\\ngamma'}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button'))
+
+    expect(container.textContent).toContain('Writer')
+    expect(container.textContent).toContain('3 lines')
+    expect(container.textContent).toContain('16 chars')
+    expect(container.textContent).not.toContain('latest')
+  })
+
+  it('shows pending Edit replacement character progress in the collapsed header', () => {
+    const { container } = render(
+      <ToolCallBlock
+        toolName="Edit"
+        input={{ file_path: '/tmp/example.ts' }}
+        isPending
+        partialInput={'{"file_path":"/tmp/example.ts","old_string":"const ready = false","new_string":"const ready = true'}
+      />,
+    )
+
+    expect(container.textContent).toContain('Preparing edit')
+    expect(container.textContent).toContain('1 line')
+    expect(container.textContent).toContain('18 chars')
   })
 
   it('windows long pending Write previews to the latest content', () => {
@@ -312,5 +387,61 @@ describe('chat blocks', () => {
     // react-diff-viewer-continued uses styled-components tables that don't
     // fully render in jsdom, so we verify the DiffViewer wrapper is mounted
     expect(container.querySelector('[class*="rounded-[var(--radius-lg)]"]')).toBeTruthy()
+  })
+
+  it('keeps every concurrent permission request actionable', () => {
+    const firstPermission = {
+      requestId: 'perm-read-1',
+      toolName: 'Read',
+      toolUseId: 'tool-read-1',
+      input: { file_path: '/outside/one.ts' },
+    }
+    const secondPermission = {
+      requestId: 'perm-read-2',
+      toolName: 'Read',
+      toolUseId: 'tool-read-2',
+      input: { file_path: '/outside/two.ts' },
+    }
+    useChatStore.setState({
+      sessions: {
+        'active-tab': {
+          messages: [],
+          chatState: 'permission_pending',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: secondPermission,
+          pendingPermissions: {
+            [firstPermission.requestId]: firstPermission,
+            [secondPermission.requestId]: secondPermission,
+          },
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(
+      <>
+        <PermissionDialog {...firstPermission} />
+        <PermissionDialog {...secondPermission} />
+      </>,
+    )
+
+    expect(screen.getAllByText('Awaiting approval')).toHaveLength(2)
+    expect(screen.getByRole('group', { name: /\/outside\/one\.ts/ })).toBeTruthy()
+    expect(screen.getByRole('group', { name: /\/outside\/two\.ts/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Allow: /outside/one.ts' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Allow: /outside/two.ts' })).toBeTruthy()
+    expect(screen.queryByText('Responded')).toBeNull()
   })
 })

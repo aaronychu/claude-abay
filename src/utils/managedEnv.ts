@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isRemoteManagedSettingsEligible } from '../services/remoteManagedSettings/syncCache.js'
-import { mergeActiveProviderManagedEnv } from '../server/services/providerRuntimeEnv.js'
+import {
+  activeProviderNeedsProxy,
+  mergeActiveProviderManagedEnv,
+} from '../server/services/providerRuntimeEnv.js'
+import { ensureStandaloneProviderProxy } from '../server/proxy/standaloneProviderProxy.js'
 import { clearCACertsCache } from './caCerts.js'
 import { getGlobalConfig } from './config.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
@@ -62,6 +66,23 @@ function withoutHostManagedProviderVars(
   return out
 }
 
+const HOST_OWNED_ENV_KEYS = new Set([
+  'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+  'CC_HAHA_LOCAL_ACCESS_TOKEN',
+])
+
+function withoutHostOwnedEnvVars(
+  env: Record<string, string> | undefined,
+): Record<string, string> {
+  if (!env || !isEnvTruthy(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST)) {
+    return env || {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !HOST_OWNED_ENV_KEYS.has(key)),
+  )
+}
+
 /**
  * Snapshot of env keys present before any settings.env is applied — for CCD,
  * these are the keys the desktop host set to orchestrate the subprocess.
@@ -90,25 +111,33 @@ function filterSettingsEnv(
   env: Record<string, string> | undefined,
 ): Record<string, string> {
   return withoutCcdSpawnEnvKeys(
-    withoutHostManagedProviderVars(withoutSSHTunnelVars(env)),
+    withoutHostOwnedEnvVars(
+      withoutHostManagedProviderVars(withoutSSHTunnelVars(env)),
+    ),
   )
 }
 
 /**
- * Read env vars from ~/.claude/claude-abay/settings.json (A+BAY-specific provider
+ * Read env vars from ~/.claude/claude-abay/settings.json (Haha-specific provider
  * config). This file is written by ProviderService.syncToSettings() and
  * contains ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, model defaults, etc.
  * Returns an empty object if the file doesn't exist or is invalid.
  */
-function getAbaySettingsEnv(): Record<string, string> {
+function getCcHahaSettingsEnv(): Record<string, string> {
+  const configDir = getClaudeConfigHomeDir()
+  const serverPort =
+    !isEnvTruthy(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST) &&
+    activeProviderNeedsProxy(configDir)
+      ? ensureStandaloneProviderProxy()
+      : undefined
   try {
-    const abaySettings = join(getClaudeConfigHomeDir(), 'claude-abay', 'settings.json')
-    const raw = readFileSync(abaySettings, 'utf-8')
+    const ccHahaSettings = join(configDir, 'claude-abay', 'settings.json')
+    const raw = readFileSync(ccHahaSettings, 'utf-8')
     const parsed = JSON.parse(raw) as { env?: Record<string, string> }
     const settingsEnv = normalizeLegacyDeepSeekManagedEnv(parsed.env ?? {}).env
-    return mergeActiveProviderManagedEnv(settingsEnv, getClaudeConfigHomeDir())
+    return mergeActiveProviderManagedEnv(settingsEnv, configDir, { serverPort })
   } catch {
-    return mergeActiveProviderManagedEnv({}, getClaudeConfigHomeDir())
+    return mergeActiveProviderManagedEnv({}, configDir, { serverPort })
   }
 }
 
@@ -171,10 +200,10 @@ export function applySafeConfigEnvironmentVariables(): void {
   }
 
   // claude-abay provider isolation: apply env from ~/.claude/claude-abay/settings.json
-  // AFTER userSettings so A+BAY-specific provider config takes priority over
-  // the original Claude Code's settings. This prevents A+BAY from polluting
+  // AFTER userSettings so Haha-specific provider config takes priority over
+  // the original Claude Code's settings. This prevents Haha from polluting
   // ~/.claude/settings.json while still allowing it to override provider vars.
-  Object.assign(process.env, filterSettingsEnv(getAbaySettingsEnv()))
+  Object.assign(process.env, filterSettingsEnv(getCcHahaSettingsEnv()))
 
   // Compute remote-managed-settings eligibility now, with userSettings and
   // flagSettings env applied. Eligibility reads CLAUDE_CODE_USE_BEDROCK,
@@ -218,8 +247,8 @@ export function applyConfigEnvironmentVariables(): void {
   Object.assign(process.env, filterSettingsEnv(getSettings_DEPRECATED()?.env))
 
   // claude-abay provider isolation: same as in applySafeConfigEnvironmentVariables,
-  // apply A+BAY-specific env last so it overrides the original settings.
-  Object.assign(process.env, filterSettingsEnv(getAbaySettingsEnv()))
+  // apply Haha-specific env last so it overrides the original settings.
+  Object.assign(process.env, filterSettingsEnv(getCcHahaSettingsEnv()))
 
   // Clear caches so agents are rebuilt with the new env vars
   clearCACertsCache()

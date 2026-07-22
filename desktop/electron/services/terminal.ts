@@ -11,6 +11,7 @@ const TERMINAL_CONFIG_FILE = 'terminal-config.json'
 const MIN_TERMINAL_COLS = 20
 const MIN_TERMINAL_ROWS = 8
 const NODE_PTY_MANIFEST_FILE = '.claude-abay-node-pty-manifest.json'
+const MACOS_DOWNLOAD_XATTRS = ['com.apple.quarantine', 'com.apple.provenance']
 
 export type TerminalSpawnInput = {
   cols?: number
@@ -59,7 +60,7 @@ export type TerminalPtyFactory = {
 }
 
 export type TerminalAppLike = {
-  getPath(name: 'userData'): string
+  getPath(name: 'home' | 'userData'): string
 }
 
 export type TerminalWebContentsLike = {
@@ -103,18 +104,26 @@ export function terminalConfigPath(app: TerminalAppLike | undefined, env: NodeJS
     return path.join(portableDir, TERMINAL_CONFIG_FILE)
   }
   if (!app) return null
-  return path.join(app.getPath('userData'), TERMINAL_CONFIG_FILE)
+  return path.join(app.getPath('home'), '.claude', TERMINAL_CONFIG_FILE)
 }
 
-export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string | null {
+export function claudeConfigDir(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
   const portableDir = env.CLAUDE_CONFIG_DIR?.trim()
   if (portableDir) return portableDir
-  const home = env.HOME || env.USERPROFILE || os.homedir()
+  const home = platform === 'win32'
+    ? env.USERPROFILE || os.homedir()
+    : env.HOME || os.homedir()
   return home ? path.join(home, '.claude') : null
 }
 
-export function desktopTerminalSettingsPath(env: NodeJS.ProcessEnv = process.env): string | null {
-  const dir = claudeConfigDir(env)
+export function desktopTerminalSettingsPath(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const dir = claudeConfigDir(env, platform)
   return dir ? path.join(dir, 'settings.json') : null
 }
 
@@ -227,8 +236,11 @@ export function terminalEnvironment(
   return ensureUtf8Locale(merged, platform)
 }
 
-export function readDesktopTerminalConfig(env: NodeJS.ProcessEnv = process.env): DesktopTerminalConfig | null {
-  const settingsPath = desktopTerminalSettingsPath(env)
+export function readDesktopTerminalConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): DesktopTerminalConfig | null {
+  const settingsPath = desktopTerminalSettingsPath(env, platform)
   if (!settingsPath) return null
   try {
     const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as DesktopTerminalSettingsFile
@@ -241,11 +253,18 @@ export function readDesktopTerminalConfig(env: NodeJS.ProcessEnv = process.env):
 function loadTerminalConfig(app: TerminalAppLike | undefined, env: NodeJS.ProcessEnv): TerminalConfig {
   const configPath = terminalConfigPath(app, env)
   if (!configPath) return {}
-  try {
-    return JSON.parse(fs.readFileSync(configPath, 'utf8')) as TerminalConfig
-  } catch {
-    return {}
+  const candidates = [configPath]
+  if (app && !env.CLAUDE_CONFIG_DIR) {
+    candidates.push(path.join(app.getPath('userData'), TERMINAL_CONFIG_FILE))
   }
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(fs.readFileSync(candidate, 'utf8')) as TerminalConfig
+    } catch {
+      // Try the old Electron userData location before using defaults.
+    }
+  }
+  return {}
 }
 
 function saveTerminalConfig(app: TerminalAppLike | undefined, env: NodeJS.ProcessEnv, config: TerminalConfig) {
@@ -367,6 +386,47 @@ function chmodNodePtyDirectories(moduleDir: string): void {
   }
 }
 
+function stripMacosDownloadAttributes(moduleDir: string): void {
+  if (process.platform !== 'darwin') return
+
+  for (const attr of MACOS_DOWNLOAD_XATTRS) {
+    try {
+      execFileSync('/usr/bin/xattr', ['-dr', attr, moduleDir], { stdio: 'ignore' })
+    } catch {
+      // Best effort: the attribute may be absent, but stale quarantine blocks copied .node files.
+    }
+  }
+
+  for (const filePath of walkNodePtyFiles(moduleDir)) {
+    let originalMode: number | null = null
+    try {
+      const stat = fs.statSync(filePath)
+      const mode = stat.mode & 0o777
+      if ((mode & 0o200) === 0) {
+        originalMode = mode
+        fs.chmodSync(filePath, mode | 0o200)
+      }
+      for (const attr of MACOS_DOWNLOAD_XATTRS) {
+        try {
+          execFileSync('/usr/bin/xattr', ['-d', attr, filePath], { stdio: 'ignore' })
+        } catch {
+          // Best effort: only files that still carry download xattrs need this fallback.
+        }
+      }
+    } catch {
+      // Best effort: a partially rebuilt cache will be removed and copied again later.
+    } finally {
+      if (originalMode != null) {
+        try {
+          fs.chmodSync(filePath, originalMode)
+        } catch {
+          // Best effort: helper executable bits are restored separately before loading node-pty.
+        }
+      }
+    }
+  }
+}
+
 function isNodePtyCacheCurrent(sourceManifest: NodePtyIntegrityManifest, cacheDir: string): boolean {
   const cacheManifest = readNodePtyManifest(cacheDir)
   if (!cacheManifest || !manifestsEqual(sourceManifest, cacheManifest)) return false
@@ -385,9 +445,11 @@ export function prepareNodePtyRuntime(sourceDir: string, cacheDir: string): stri
   const sourceManifest = buildNodePtyManifest(sourceDir)
 
   if (preparedNodePtyDirs.has(cacheDir) && isNodePtyCacheCurrent(sourceManifest, cacheDir)) {
+    stripMacosDownloadAttributes(cacheDir)
     return cacheDir
   }
   if (!preparedNodePtyDirs.has(cacheDir) && isNodePtyCacheCurrent(sourceManifest, cacheDir)) {
+    stripMacosDownloadAttributes(cacheDir)
     preparedNodePtyDirs.add(cacheDir)
     return cacheDir
   }
@@ -396,6 +458,7 @@ export function prepareNodePtyRuntime(sourceDir: string, cacheDir: string): stri
   fs.mkdirSync(path.dirname(cacheDir), { recursive: true, mode: 0o700 })
   fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 })
   fs.cpSync(sourceDir, cacheDir, { recursive: true })
+  stripMacosDownloadAttributes(cacheDir)
   ensureNodePtyHelpersExecutable(cacheDir)
   chmodNodePtyDirectories(cacheDir)
   if (!manifestsEqual(sourceManifest, buildNodePtyManifest(cacheDir))) {
@@ -475,7 +538,7 @@ export class ElectronTerminalService {
       terminalConfig.bash_path ?? null,
       this.fileExists,
     )
-    return resolveDesktopTerminalShell(this.platform, readDesktopTerminalConfig(this.env)) ?? systemDefault
+    return resolveDesktopTerminalShell(this.platform, readDesktopTerminalConfig(this.env, this.platform)) ?? systemDefault
   }
 
   async spawn(input: TerminalSpawnInput, webContents: TerminalWebContentsLike): Promise<TerminalSpawnResult> {

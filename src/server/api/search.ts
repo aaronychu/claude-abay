@@ -35,8 +35,16 @@ export async function handleSearchApi(
 
     // ── POST /api/search/sessions ──────────────────────────────────────────
     if (sub === 'sessions') {
-      const results = await searchService.searchSessions(query)
-      return Response.json({ results })
+      const { results, truncated } = await searchService.searchSessions(query, {
+        limit: body.limit as number | undefined,
+        matchesPerSession: body.matchesPerSession as number | undefined,
+        caseSensitive: body.caseSensitive as boolean | undefined,
+        project: body.project as string | undefined,
+        modifiedAfter: body.modifiedAfter as string | undefined,
+        modifiedBefore: body.modifiedBefore as string | undefined,
+        signal: req.signal,
+      })
+      return Response.json({ results, total: results.length, truncated })
     }
 
     // ── POST /api/search ───────────────────────────────────────────────────
@@ -52,6 +60,9 @@ export async function handleSearchApi(
 
     throw ApiError.notFound(`Unknown search endpoint: ${sub}`)
   } catch (error) {
+    if (req.signal.aborted) {
+      return new Response(null, { status: 499 })
+    }
     return errorResponse(error)
   }
 }

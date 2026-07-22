@@ -183,6 +183,7 @@ import { endQueryProfile, queryCheckpoint } from "src/utils/queryProfiler.js";
 import {
   modelSupportsAdaptiveThinking,
   modelSupportsThinking,
+  resolveModelThinkingEnabled,
   shouldSendExplicitDisabledThinking,
   type ThinkingConfig,
 } from "src/utils/thinking.js";
@@ -211,6 +212,12 @@ import {
   startSessionActivity,
   stopSessionActivity,
 } from "../../utils/sessionActivity.js";
+import { shouldTriggerNonStreamingFallbackForEmptyStream } from "./streamFallback.js";
+import { StreamAssistantCommitBuffer } from "./streamAssistantCommitBuffer.js";
+import {
+  StreamWatchdogTimeoutError,
+  createStreamWatchdogState,
+} from "./streamWatchdog.js";
 import { jsonStringify } from "../../utils/slowOperations.js";
 import {
   isBetaTracingEnabled,
@@ -253,10 +260,13 @@ import {
   checkResponseForCacheBreak,
   recordPromptState,
 } from "./promptCacheBreakDetection.js";
+import { withStreamRetry } from "./streamRetry.js";
 import {
   CannotRetryError,
   FallbackTriggeredError,
   is529Error,
+  isRetryableStreamError,
+  RetriableStreamError,
   type RetryContext,
   withRetry,
 } from "./withRetry.js";
@@ -442,31 +452,57 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
  * Configure effort parameters for API request.
  *
  */
-function configureEffortParams(
+export function configureEffortParams(
   effortValue: EffortValue | undefined,
   outputConfig: BetaOutputConfig,
   extraBodyParams: Record<string, unknown>,
   betas: string[],
   model: string,
 ): void {
-  if (!modelSupportsEffort(model) || "effort" in outputConfig) {
-    return;
+  if (
+    !modelSupportsEffort(model) ||
+    'effort' in outputConfig ||
+    shouldSuppressEffortOutputConfig()
+  ) {
+    return
   }
 
   if (effortValue === undefined) {
-    betas.push(EFFORT_BETA_HEADER);
-  } else if (typeof effortValue === "string") {
+    outputConfig.effort = 'high'
+    betas.push(EFFORT_BETA_HEADER)
+  } else if (typeof effortValue === 'string') {
     // Send string effort level as is
-    outputConfig.effort = effortValue;
-    betas.push(EFFORT_BETA_HEADER);
-  } else if (process.env.USER_TYPE === "ant") {
+    outputConfig.effort = effortValue
+    betas.push(EFFORT_BETA_HEADER)
+  } else if (process.env.USER_TYPE === 'ant') {
     // Numeric effort override - ant-only (uses anthropic_internal)
     const existingInternal =
-      (extraBodyParams.anthropic_internal as Record<string, unknown>) || {};
+      (extraBodyParams.anthropic_internal as Record<string, unknown>) || {}
     extraBodyParams.anthropic_internal = {
       ...existingInternal,
       effort_override: effortValue,
-    };
+    }
+  }
+}
+
+function shouldSuppressEffortOutputConfig(): boolean {
+  if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) {
+    return false
+  }
+
+  const baseUrl = process.env.ANTHROPIC_BASE_URL ?? ''
+  try {
+    const url = new URL(baseUrl)
+    const proxyPath = url.pathname.replace(/\/+$/, '')
+    const isLocalProxy =
+      (url.hostname === '127.0.0.1' || url.hostname === 'localhost') &&
+      (
+        proxyPath === '/proxy' ||
+        proxyPath.startsWith('/proxy/providers/')
+      )
+    return !isLocalProxy
+  } catch {
+    return true
   }
 }
 
@@ -730,13 +766,18 @@ export async function queryModelWithoutStreaming({
   // logAPISuccessAndDuration gets called (which happens after all yields)
   let assistantMessage: AssistantMessage | undefined;
   for await (const message of withStreamingVCR(messages, async function* () {
-    yield* queryModel(
+    yield* withStreamRetry(
+      () =>
+        queryModel(
+          messages,
+          systemPrompt,
+          thinkingConfig,
+          tools,
+          signal,
+          options,
+        ),
+      options.model,
       messages,
-      systemPrompt,
-      thinkingConfig,
-      tools,
-      signal,
-      options,
     );
   })) {
     if (message.type === "assistant") {
@@ -773,13 +814,18 @@ export async function* queryModelWithStreaming({
   void
 > {
   return yield* withStreamingVCR(messages, async function* () {
-    yield* queryModel(
+    yield* withStreamRetry(
+      () =>
+        queryModel(
+          messages,
+          systemPrompt,
+          thinkingConfig,
+          tools,
+          signal,
+          options,
+        ),
+      options.model,
       messages,
-      systemPrompt,
-      thinkingConfig,
-      tools,
-      signal,
-      options,
     );
   });
 }
@@ -1610,9 +1656,11 @@ async function* queryModel(
         : [];
     const extraBodyParams = getExtraBodyParams(bedrockBetas);
 
-    const hasThinking =
+    const hasThinking = resolveModelThinkingEnabled(
+      options.model,
       thinkingConfig.type !== 'disabled' &&
-      !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING)
+        !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING),
+    )
     const modelCanThink = modelSupportsThinking(options.model)
     const sendsExplicitDisabledThinking =
       !hasThinking && (modelCanThink || shouldSendExplicitDisabledThinking())
@@ -1826,6 +1874,7 @@ async function* queryModel(
   }
 
   const newMessages: AssistantMessage[] = [];
+  const assistantCommitBuffer = new StreamAssistantCommitBuffer<AssistantMessage>();
   let ttftMs = 0;
   let partialMessage: BetaMessage | undefined = undefined;
   const contentBlocks: (BetaContentBlock | ConnectorTextBlock)[] = [];
@@ -1943,12 +1992,39 @@ async function* queryModel(
     );
     const STREAM_IDLE_TIMEOUT_MS =
       parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || "", 10) || 90_000;
-    const STREAM_IDLE_WARNING_MS = STREAM_IDLE_TIMEOUT_MS / 2;
+    // Budget for the FIRST chunk after response headers arrive (the prefill /
+    // time-to-first-token phase). Slow local models and 3P gateways can spend
+    // minutes prefilling a large context while emitting zero SSE bytes (#826);
+    // the SDK request timeout only covers up to the response headers, so the
+    // mid-stream idle watchdog (STREAM_IDLE_TIMEOUT_MS) otherwise kills these
+    // healthy-but-slow requests long before the user's configured timeout.
+    // Falls back to API_TIMEOUT_MS (the user's request-timeout knob), then to
+    // the idle value so terminal CLI behavior is unchanged when unset.
+    const STREAM_FIRST_TOKEN_TIMEOUT_MS =
+      parseInt(process.env.CLAUDE_STREAM_FIRST_TOKEN_TIMEOUT_MS || "", 10) ||
+      parseInt(process.env.API_TIMEOUT_MS || "", 10) ||
+      STREAM_IDLE_TIMEOUT_MS;
+    // The idle watchdog waits the first-token budget until the first chunk
+    // arrives, then switches to the shorter mid-stream idle budget (#826).
+    let currentStreamIdleTimeoutMs = STREAM_FIRST_TOKEN_TIMEOUT_MS;
+    // Overall wall-clock cap for a single streaming response. UNLIKE the idle
+    // timer, this is NEVER reset by incoming chunks, so it catches upstreams that
+    // trickle content deltas (e.g. a large tool_use input_json_delta) just fast
+    // enough to keep resetting the idle timer but never send message_stop — the
+    // idle watchdog can then never fire and the request hangs forever (#766).
+    // 0 disables it (terminal CLI default); the desktop injects a value.
+    const STREAM_MAX_DURATION_MS =
+      parseInt(process.env.CLAUDE_STREAM_MAX_DURATION_MS || "", 10) || 0;
     let streamIdleAborted = false;
+    // Which watchdog tripped, so the thrown error message is accurate.
+    let streamAbortReason: "idle" | "max_duration" | null = null;
+    const streamWatchdogState = createStreamWatchdogState();
+    let streamWatchdogTimeoutError: StreamWatchdogTimeoutError | null = null;
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
     let streamWatchdogFiredAt: number | null = null;
     let streamIdleWarningTimer: ReturnType<typeof setTimeout> | null = null;
     let streamIdleTimer: ReturnType<typeof setTimeout> | null = null;
+    let streamMaxDurationTimer: ReturnType<typeof setTimeout> | null = null;
     function clearStreamIdleTimers(): void {
       if (streamIdleWarningTimer !== null) {
         clearTimeout(streamIdleWarningTimer);
@@ -1964,36 +2040,98 @@ async function* queryModel(
       if (!streamWatchdogEnabled) {
         return;
       }
+      // Snapshot the active budget so a fire reports the value it was armed
+      // with, even if the phase (first-token → idle) flips between arm and fire.
+      const idleMs = currentStreamIdleTimeoutMs;
+      const warningMs = idleMs / 2;
       streamIdleWarningTimer = setTimeout(
         (warnMs) => {
+          const warningError = streamWatchdogState.createTimeoutError(
+            "idle",
+            warnMs,
+          );
           logForDebugging(
-            `Streaming idle warning: no chunks received for ${warnMs / 1000}s`,
+            `Streaming idle warning: ${warningError.message}`,
             { level: "warn" },
           );
-          logForDiagnosticsNoPII("warn", "cli_streaming_idle_warning");
+          logForDiagnosticsNoPII(
+            "warn",
+            "cli_streaming_idle_warning",
+            warningError.toDiagnosticData(),
+          );
         },
-        STREAM_IDLE_WARNING_MS,
-        STREAM_IDLE_WARNING_MS,
+        warningMs,
+        warningMs,
       );
       streamIdleTimer = setTimeout(() => {
         streamIdleAborted = true;
+        streamAbortReason = "idle";
         streamWatchdogFiredAt = performance.now();
+        streamWatchdogTimeoutError = streamWatchdogState.createTimeoutError(
+          "idle",
+          idleMs,
+        );
         logForDebugging(
-          `Streaming idle timeout: no chunks received for ${STREAM_IDLE_TIMEOUT_MS / 1000}s, aborting stream`,
+          `Streaming idle timeout: ${streamWatchdogTimeoutError.message}, aborting stream`,
           { level: "error" },
         );
-        logForDiagnosticsNoPII("error", "cli_streaming_idle_timeout");
+        logForDiagnosticsNoPII(
+          "error",
+          "cli_streaming_idle_timeout",
+          streamWatchdogTimeoutError.toDiagnosticData(),
+        );
         logEvent("tengu_streaming_idle_timeout", {
           model:
             options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           request_id: (streamRequestId ??
             "unknown") as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          timeout_ms: STREAM_IDLE_TIMEOUT_MS,
+          timeout_ms: idleMs,
+          reason:
+            streamWatchdogTimeoutError.reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          phase:
+            streamWatchdogTimeoutError.phase as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          content_delta_count:
+            streamWatchdogTimeoutError.streamSnapshot.contentDeltaCount,
         });
         releaseStreamResources();
-      }, STREAM_IDLE_TIMEOUT_MS);
+      }, idleMs);
     }
     resetStreamIdleTimer();
+    // Arm the overall-duration watchdog exactly once. It is intentionally NOT
+    // re-armed in resetStreamIdleTimer(), so a steady trickle of chunks cannot
+    // keep the request alive forever (#766).
+    if (streamWatchdogEnabled && STREAM_MAX_DURATION_MS > 0) {
+      streamMaxDurationTimer = setTimeout(() => {
+        streamIdleAborted = true;
+        streamAbortReason = "max_duration";
+        streamWatchdogFiredAt = performance.now();
+        streamWatchdogTimeoutError = streamWatchdogState.createTimeoutError(
+          "max_duration",
+          STREAM_MAX_DURATION_MS,
+        );
+        logForDebugging(
+          `Streaming max duration exceeded: ${streamWatchdogTimeoutError.message}, aborting stream`,
+          { level: "error" },
+        );
+        logForDiagnosticsNoPII("error", "cli_streaming_max_duration_exceeded", {
+          ...streamWatchdogTimeoutError.toDiagnosticData(),
+        });
+        logEvent("tengu_streaming_max_duration_timeout", {
+          model:
+            options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          request_id: (streamRequestId ??
+            "unknown") as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          timeout_ms: STREAM_MAX_DURATION_MS,
+          reason:
+            streamWatchdogTimeoutError.reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          phase:
+            streamWatchdogTimeoutError.phase as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          content_delta_count:
+            streamWatchdogTimeoutError.streamSnapshot.contentDeltaCount,
+        });
+        releaseStreamResources();
+      }, STREAM_MAX_DURATION_MS);
+    }
 
     startSessionActivity("api_call");
     try {
@@ -2005,6 +2143,7 @@ async function* queryModel(
       let stallCount = 0;
 
       for await (const part of stream) {
+        const receivedFirstContentDelta = streamWatchdogState.recordEvent(part);
         resetStreamIdleTimer();
         const now = Date.now();
 
@@ -2041,6 +2180,18 @@ async function* queryModel(
           }
           endQueryProfile();
           isFirstChunk = false;
+        }
+
+        // Content is flowing - switch the watchdog from the generous first-token
+        // (prefill) budget to the shorter mid-stream idle budget. Non-content
+        // events such as message_start must not end the first-token phase: some
+        // gateways open SSE and emit bookkeeping long before useful content.
+        if (
+          receivedFirstContentDelta &&
+          currentStreamIdleTimeoutMs !== STREAM_IDLE_TIMEOUT_MS
+        ) {
+          currentStreamIdleTimeoutMs = STREAM_IDLE_TIMEOUT_MS;
+          resetStreamIdleTimer();
         }
 
         switch (part.type) {
@@ -2274,7 +2425,12 @@ async function* queryModel(
               ...(advisorModel && { advisorModel }),
             };
             newMessages.push(m);
-            yield m;
+            for (const committedMessage of assistantCommitBuffer.add(
+              m,
+              contentBlock.type,
+            )) {
+              yield committedMessage;
+            }
             break;
           }
           case "message_delta": {
@@ -2314,6 +2470,18 @@ async function* queryModel(
               lastMsg.message.stop_reason = stopReason;
             }
 
+            // Max-token recovery needs the completed assistant blocks before
+            // its synthetic error so query.ts still sees the error as the
+            // terminal message and can continue from the partial response.
+            if (
+              stopReason === "max_tokens" ||
+              stopReason === "model_context_window_exceeded"
+            ) {
+              for (const committedMessage of assistantCommitBuffer.flush()) {
+                yield committedMessage;
+              }
+            }
+
             // Update cost
             const costUSDForPart = calculateUSDCost(resolvedModel, usage);
             costUSD += addToTotalSessionCost(
@@ -2327,6 +2495,9 @@ async function* queryModel(
               options.model,
             );
             if (refusalMessage) {
+              for (const committedMessage of assistantCommitBuffer.flush()) {
+                yield committedMessage;
+              }
               yield refusalMessage;
             }
 
@@ -2371,6 +2542,10 @@ async function* queryModel(
       }
       // Clear the idle timeout watchdog now that the stream loop has exited
       clearStreamIdleTimers();
+      if (streamMaxDurationTimer !== null) {
+        clearTimeout(streamMaxDurationTimer);
+        streamMaxDurationTimer = null;
+      }
 
       // If the stream was aborted by our idle timeout watchdog, fall back to
       // non-streaming retry rather than treating it as a completed stream.
@@ -2398,7 +2573,13 @@ async function* queryModel(
         // Prevent double-emit: this throw lands in the catch block below,
         // whose exit_path='error' probe guards on streamWatchdogFiredAt.
         streamWatchdogFiredAt = null;
-        throw new Error("Stream idle timeout - no chunks received");
+        throw streamWatchdogTimeoutError ??
+          streamWatchdogState.createTimeoutError(
+            streamAbortReason ?? "idle",
+            streamAbortReason === "max_duration"
+              ? STREAM_MAX_DURATION_MS
+              : currentStreamIdleTimeoutMs,
+          );
       }
 
       // Detect when the stream completed without producing any assistant messages.
@@ -2413,11 +2594,22 @@ async function* queryModel(
       // Note: We must check stopReason to avoid false positives. For example, with
       // structured output (--json-schema), the model calls a StructuredOutput tool
       // on turn 1, then on turn 2 responds with end_turn and no content blocks.
-      // That's a legitimate empty response, not an incomplete stream.
-      if (!partialMessage || (newMessages.length === 0 && !stopReason)) {
+      // That's a legitimate empty response, not an incomplete stream. However,
+      // stop_reason=tool_use with no completed tool block is incomplete: some
+      // OpenAI-compatible streams send only finish_reason=tool_calls, and we
+      // need the non-streaming fallback to recover the full tool call.
+      if (
+        shouldTriggerNonStreamingFallbackForEmptyStream({
+          hasMessageStart: partialMessage !== undefined,
+          assistantMessageCount: newMessages.length,
+          stopReason,
+        })
+      ) {
         logForDebugging(
           !partialMessage
             ? "Stream completed without receiving message_start event - triggering non-streaming fallback"
+            : stopReason === "tool_use"
+              ? "Stream completed with tool_use stop but no completed tool block - triggering non-streaming fallback"
             : "Stream completed with message_start but no content blocks completed - triggering non-streaming fallback",
           { level: "error" },
         );
@@ -2428,6 +2620,13 @@ async function* queryModel(
             "unknown") as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         });
         throw new Error("Stream ended without receiving any events");
+      }
+
+      // No tool boundary was crossed, so completed thinking/text blocks were
+      // intentionally held until the response proved it could finish. This
+      // keeps a watchdog retry from persisting orphan partial blocks.
+      for (const committedMessage of assistantCommitBuffer.flush()) {
+        yield committedMessage;
       }
 
       // Log summary if any stalls occurred during streaming
@@ -2471,6 +2670,10 @@ async function* queryModel(
     } catch (streamingError) {
       // Clear the idle timeout watchdog on error path too
       clearStreamIdleTimers();
+      if (streamMaxDurationTimer !== null) {
+        clearTimeout(streamMaxDurationTimer);
+        streamMaxDurationTimer = null;
+      }
 
       // Instrumentation: if the watchdog had already fired and the for-await
       // threw (rather than exiting cleanly), record that the loop DID exit and
@@ -2526,6 +2729,42 @@ async function* queryModel(
           // Throw a more specific error for timeout
           throw new APIConnectionTimeoutError({ message: "Request timed out" });
         }
+      }
+
+      // A watchdog stall is recoverable while the failed attempt is still
+      // side-effect-free. Completed thinking/text and partial local tool JSON
+      // stay buffered, so re-establishing the stream cannot duplicate a tool.
+      // A completed local tool block or any server-side tool activity closes
+      // this retry boundary permanently for the attempt.
+      if (
+        streamIdleAborted &&
+        streamingError instanceof StreamWatchdogTimeoutError &&
+        streamingError.safeToRetryStream() &&
+        !assistantCommitBuffer.hasCrossedSideEffectBoundary() &&
+        !signal.aborted
+      ) {
+        logForDebugging(
+          `Watchdog timeout before content/tool output, will retry stream: ${errorMessage(
+            streamingError,
+          )}`,
+          { level: "warn" },
+        );
+        throw new RetriableStreamError(streamingError);
+      }
+
+      if (
+        newMessages.length === 0 &&
+        !streamIdleAborted &&
+        !signal.aborted &&
+        isRetryableStreamError(streamingError)
+      ) {
+        logForDebugging(
+          `Transient mid-stream error before any output, will retry stream: ${errorMessage(
+            streamingError,
+          )}`,
+          { level: "warn" },
+        );
+        throw new RetriableStreamError(streamingError);
       }
 
       // When the flag is enabled, skip the non-streaming fallback and let the
@@ -2676,6 +2915,14 @@ async function* queryModel(
     // no-op — the user would just see "Model fallback triggered: X -> Y" as
     // an error message with no actual retry on the fallback model.
     if (errorFromRetry instanceof FallbackTriggeredError) {
+      throw errorFromRetry;
+    }
+
+    // A transient mid-stream error flagged for stream-level retry: propagate up
+    // to withStreamRetry (the streaming wrapper), which re-establishes the
+    // stream. Must escape the terminal error handling below, which would
+    // otherwise yield an API-error message and end the turn.
+    if (errorFromRetry instanceof RetriableStreamError) {
       throw errorFromRetry;
     }
 

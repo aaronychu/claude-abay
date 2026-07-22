@@ -9,6 +9,7 @@ import { buildTraceWindowUrl } from '../traceLaunch'
 
 const browserCapabilities: DesktopHostCapabilities = {
   appMode: false,
+  clipboard: false,
   dialogs: false,
   notifications: false,
   previewWebview: false,
@@ -30,7 +31,6 @@ function noopUnlisten(): void {
 const defaultAppMode: AppModeConfig = {
   mode: 'default',
   portableDir: null,
-  defaultPortableDir: null,
 }
 
 const defaultPermissionState: NotificationPermissionState = 'default'
@@ -43,6 +43,9 @@ export const browserHost: DesktopHost = {
     async getServerUrl() {
       unsupported('Resolving the bundled server URL')
     },
+    async getLocalAccessToken() {
+      unsupported('Resolving the bundled server access token')
+    },
   },
   app: {
     async getVersion() {
@@ -52,6 +55,21 @@ export const browserHost: DesktopHost = {
   commands: {
     async invoke() {
       unsupported('Native commands')
+    },
+  },
+  clipboard: {
+    async readText() {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) {
+        return navigator.clipboard.readText()
+      }
+      unsupported('Reading clipboard text')
+    },
+    async writeText(text) {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        return
+      }
+      unsupported('Writing clipboard text')
     },
   },
   events: {
@@ -204,6 +222,9 @@ export const browserHost: DesktopHost = {
     async setVisible() {
       unsupported('Native preview webview')
     },
+    async setZoom() {
+      unsupported('Native preview webview')
+    },
     async close() {
       unsupported('Native preview webview')
     },
@@ -220,9 +241,6 @@ export const browserHost: DesktopHost = {
     },
     async set() {
       unsupported('Desktop app mode')
-    },
-    async detectPortableDir() {
-      return null
     },
     async prepareRestart() {
       unsupported('Desktop app restart')

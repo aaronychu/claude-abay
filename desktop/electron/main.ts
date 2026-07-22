@@ -1,11 +1,10 @@
-import { app, BrowserWindow, ipcMain, Notification, screen, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, screen, session, WebContentsView } from 'electron'
 import { autoUpdater } from 'electron-updater'
-import { execFile } from 'node:child_process'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 import { isElectronIpcChannel, validateElectronIpcPayload } from './ipc/capabilities'
 import { ElectronServerRuntime } from './services/serverRuntime'
+import { electronHostDiagnosticsFile, sanitizeHostDiagnostic } from './services/sidecarManager'
 import { openDialog, saveDialog } from './services/dialogs'
 import { openExternalUrl, openSystemPath, openSystemSettingsUrl } from './services/shell'
 import {
@@ -16,16 +15,20 @@ import {
 import { installApplicationMenu } from './services/menu'
 import { acquireSingleInstanceLock } from './services/singleInstance'
 import { installTray, shouldInstallTray, type TrayController } from './services/tray'
-import { ElectronUpdaterService } from './services/updater'
+import { ElectronUpdaterService, updaterSessionProxyConfig } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
 import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
 import { ElectronPreviewService, type PreviewBounds } from './services/preview'
 import {
+  configureLocalServerRequestAuth,
+  configurePreviewSessionPermissions,
+  createPreviewSessionPartition,
+  type PreviewLocalAccess,
+} from './services/previewSession'
+import {
   applyStartupPortableMode,
-  detectPortableDir,
   getAppMode,
   setAppMode,
-  type PortableDetection,
 } from './services/appMode'
 import { installMacOsChromiumKeychainPromptGuard } from './services/keychain'
 import { applyWindowsAppUserModelId } from './services/appIdentity'
@@ -35,10 +38,11 @@ import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './se
 import { normalizeZoomFactor } from './services/zoom'
 import { resolveRendererEntry } from './services/rendererEntry'
 import { writeWindowSmokeSnapshot } from './services/windowSmoke'
-import { installSkillsFromPaths } from './services/skills'
+import { loadAndRevealMainWindow } from './services/windowStartup'
 import {
   installWindowLifecycle,
   readWindowState,
+  refreshWindowsDragHitTest,
   restoreWindowMaximized,
   saveWindowState,
   showMainWindow,
@@ -59,184 +63,8 @@ let trayController: TrayController | null = null
 
 installMacOsChromiumKeychainPromptGuard(app)
 
-const execFileAsync = promisify(execFile)
-const GIT_REVIEW_DIFF_LIMIT = 700
-const GIT_REVIEW_FILE_LIMIT = 80
-
 function appRoot() {
   return app.isPackaged ? app.getAppPath() : process.cwd()
-}
-
-type GitReviewFile = {
-  path: string
-  status: string
-  additions: number
-  deletions: number
-  staged: boolean
-  unstaged: boolean
-  diff: string[]
-}
-
-type GitReviewSnapshot = {
-  repo_root: string
-  branch: string
-  files: GitReviewFile[]
-  total_additions: number
-  total_deletions: number
-}
-
-type GitStatusEntry = {
-  path: string
-  status: string
-  staged: boolean
-  unstaged: boolean
-}
-
-function commandString(args: string[]) {
-  return ['git', ...args].join(' ')
-}
-
-async function runGit(cwd: string, args: string[]) {
-  try {
-    const result = await execFileAsync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      maxBuffer: 8 * 1024 * 1024,
-    })
-    return result.stdout
-  } catch (error) {
-    const details = error as { stderr?: unknown, stdout?: unknown, message?: string }
-    const stderr = typeof details.stderr === 'string' ? details.stderr.trim() : ''
-    const stdout = typeof details.stdout === 'string' ? details.stdout.trim() : ''
-    throw new Error(stderr || stdout || details.message || `Failed to run ${commandString(args)}`)
-  }
-}
-
-function resolveGitCwd(cwd?: unknown) {
-  if (typeof cwd === 'string' && cwd.trim()) return path.resolve(cwd)
-  return process.cwd()
-}
-
-function parseGitStatus(output: string): GitStatusEntry[] {
-  const entries: GitStatusEntry[] = []
-  const parts = output.split('\0').filter(Boolean)
-
-  for (let index = 0; index < parts.length; index++) {
-    const raw = parts[index]
-    if (!raw || raw.length < 4) continue
-    const status = raw.slice(0, 2)
-    let filePath = raw.slice(3)
-
-    const renamedPath = parts[index + 1]
-    if ((status.startsWith('R') || status.startsWith('C')) && renamedPath) {
-      filePath = renamedPath
-      index += 1
-    }
-
-    const indexStatus = status[0] ?? ' '
-    const worktreeStatus = status[1] ?? ' '
-    entries.push({
-      path: filePath,
-      status,
-      staged: indexStatus !== ' ' && indexStatus !== '?',
-      unstaged: worktreeStatus !== ' ' || indexStatus === '?',
-    })
-  }
-
-  return entries
-}
-
-async function diffNumstat(repoPath: string, cached: boolean, filePath: string) {
-  const args = ['diff', '--numstat']
-  if (cached) args.push('--cached')
-  args.push('--', filePath)
-  const output = await runGit(repoPath, args)
-  let additions = 0
-  let deletions = 0
-
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue
-    const [added, deleted] = line.split('\t')
-    additions += Number.parseInt(added ?? '0', 10) || 0
-    deletions += Number.parseInt(deleted ?? '0', 10) || 0
-  }
-
-  return { additions, deletions }
-}
-
-async function diffLines(repoPath: string, cached: boolean, filePath: string) {
-  const args = ['diff', '--unified=3', '--src-prefix=a/', '--dst-prefix=b/']
-  if (cached) args.push('--cached')
-  args.push('--', filePath)
-  return (await runGit(repoPath, args))
-    .split('\n')
-    .slice(0, GIT_REVIEW_DIFF_LIMIT)
-}
-
-async function gitReviewSnapshot(args?: Record<string, unknown>): Promise<GitReviewSnapshot> {
-  const cwd = resolveGitCwd(args?.cwd)
-  const repoRoot = (await runGit(cwd, ['rev-parse', '--show-toplevel'])).trim()
-  const branch = await runGit(repoRoot, ['branch', '--show-current'])
-    .then(value => value.trim() || 'detached')
-    .catch(() => 'unknown')
-  const statusOutput = await runGit(repoRoot, ['status', '--porcelain=v1', '-z'])
-  const entries = parseGitStatus(statusOutput).slice(0, GIT_REVIEW_FILE_LIMIT)
-  const files: GitReviewFile[] = []
-  let total_additions = 0
-  let total_deletions = 0
-
-  for (const entry of entries) {
-    const unstaged = await diffNumstat(repoRoot, false, entry.path).catch(() => ({ additions: 0, deletions: 0 }))
-    const staged = await diffNumstat(repoRoot, true, entry.path).catch(() => ({ additions: 0, deletions: 0 }))
-    const additions = unstaged.additions + staged.additions
-    const deletions = unstaged.deletions + staged.deletions
-    total_additions += additions
-    total_deletions += deletions
-
-    let diff = await diffLines(repoRoot, false, entry.path).catch(() => [])
-    if (diff.length === 0 || (diff.length === 1 && diff[0] === '')) {
-      diff = await diffLines(repoRoot, true, entry.path).catch(() => [])
-    }
-
-    files.push({
-      path: entry.path,
-      status: entry.status,
-      additions,
-      deletions,
-      staged: entry.staged,
-      unstaged: entry.unstaged,
-      diff,
-    })
-  }
-
-  return {
-    repo_root: repoRoot,
-    branch,
-    files,
-    total_additions,
-    total_deletions,
-  }
-}
-
-async function gitReviewAction(args?: Record<string, unknown>) {
-  const cwd = resolveGitCwd(args?.cwd)
-  const repoRoot = (await runGit(cwd, ['rev-parse', '--show-toplevel'])).trim()
-  const action = args?.action
-
-  if (action === 'stage_all') {
-    await runGit(repoRoot, ['add', '-A'])
-    return
-  }
-  if (action === 'unstage_all') {
-    await runGit(repoRoot, ['reset'])
-    return
-  }
-  if (action === 'revert_unstaged') {
-    await runGit(repoRoot, ['restore', '.'])
-    return
-  }
-
-  throw new Error(`unsupported git review action: ${String(action)}`)
 }
 
 function unpackedRoot() {
@@ -319,23 +147,27 @@ function getServerRuntime() {
     desktopRoot: unpackedRoot(),
     appRoot: appRoot(),
     h5DistDir: path.join(unpackedRoot(), 'dist'),
+    diagnosticsFile: electronHostDiagnosticsFile(process.env),
     resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
   })
   return serverRuntime
+}
+
+function resolveLocalServerAccess(): PreviewLocalAccess | null {
+  const runtime = getServerRuntime()
+  const serverUrl = runtime.getActiveServerUrl()
+  return serverUrl
+    ? { serverUrl, token: runtime.getLocalAccessToken() }
+    : null
 }
 
 function getUpdaterService() {
   const smokeUpdater = createUpdateSmokeUpdaterFromEnv(process.env)
   updaterService ??= new ElectronUpdaterService(smokeUpdater ?? autoUpdater, {
     async apply(proxy) {
-      const config = proxy
-        ? { proxyRules: proxy, proxyBypassRules: '<local>' }
-        : {}
-      await Promise.all([
-        app.setProxy(config),
-        session.defaultSession.setProxy(config),
-      ])
-      await session.defaultSession.forceReloadProxyConfig()
+      // Update traffic runs on electron-updater's own session partition;
+      // configuring app/defaultSession proxies never reaches it.
+      await autoUpdater.netSession.setProxy(updaterSessionProxyConfig(proxy))
     },
   }, {
     updateConfigPath: !smokeUpdater && app.isPackaged ? path.join(process.resourcesPath, 'app-update.yml') : undefined,
@@ -360,15 +192,25 @@ function getTerminalService() {
 function getPreviewService() {
   previewService ??= new ElectronPreviewService({
     previewScriptPath: previewAgentPath(),
+    resolveScaleFactor: parent => {
+      const bounds = parent.getBounds?.()
+      return bounds ? screen.getDisplayMatching(bounds).scaleFactor : 1
+    },
     createView: () => {
       const view = new WebContentsView({
         webPreferences: {
           preload: previewPreloadPath(),
+          partition: createPreviewSessionPartition(),
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
         },
       })
+      configurePreviewSessionPermissions(view.webContents.session)
+      configureLocalServerRequestAuth(
+        view.webContents.session.webRequest,
+        resolveLocalServerAccess,
+      )
       installPreviewNavigationGuards(view.webContents, { openExternal: openExternalUrl })
       return view
     },
@@ -407,13 +249,6 @@ async function handleCommandInvoke(payload: unknown): Promise<unknown> {
   const { command, args } = payload as { command: string, args?: Record<string, unknown> }
 
   switch (command) {
-    case 'git_review_snapshot':
-      return gitReviewSnapshot(args)
-    case 'git_review_action':
-      await gitReviewAction(args)
-      return null
-    case 'install_skills_from_paths':
-      return installSkillsFromPaths(args ?? {})
     case 'plugin:notification|is_permission_granted':
       return notificationPermissionState(Notification) === 'granted'
     case 'plugin:notification|request_permission':
@@ -442,7 +277,13 @@ function registerIpcHandlers() {
   })
   registerHandler(ELECTRON_IPC_CHANNELS.appGetVersion, () => app.getVersion())
   registerHandler(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl, () => getServerRuntime().getServerUrl())
+  registerHandler(
+    ELECTRON_IPC_CHANNELS.runtimeGetLocalAccessToken,
+    () => getServerRuntime().getLocalAccessToken(),
+  )
   registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
+  registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())
+  registerHandler(ELECTRON_IPC_CHANNELS.clipboardWriteText, (_event, payload) => clipboard.writeText(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.shellOpen, (_event, payload) => openExternalUrl(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.shellOpenPath, (_event, payload) => openSystemPath(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.traceOpenWindow, (_event, payload) => openTraceWindow(String(payload)))
@@ -510,12 +351,12 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.previewNavigate, (_event, payload) => getPreviewService().navigate(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.previewSetBounds, (_event, payload) => getPreviewService().setBounds(payload as PreviewBounds))
   registerHandler(ELECTRON_IPC_CHANNELS.previewSetVisible, (_event, payload) => getPreviewService().setVisible(Boolean(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewSetZoom, (_event, payload) => getPreviewService().setZoomFactor(payload))
   registerHandler(ELECTRON_IPC_CHANNELS.previewClose, () => getPreviewService().close())
   registerHandler(ELECTRON_IPC_CHANNELS.previewMessage, (event, payload) => getPreviewService().message(payload, event.sender))
   registerHandler(ELECTRON_IPC_CHANNELS.appModeGet, () => getAppMode(app))
   registerHandler(ELECTRON_IPC_CHANNELS.appModeSet, (_event, payload) => setAppMode(app, payload as Parameters<typeof setAppMode>[1]))
-  registerHandler(ELECTRON_IPC_CHANNELS.appModeDetectPortableDir, () => detectPortableDir(app) as PortableDetection)
-  registerHandler(ELECTRON_IPC_CHANNELS.appModePrepareRestart, () => getServerRuntime().stopAll())
+  registerHandler(ELECTRON_IPC_CHANNELS.appModePrepareRestart, () => getServerRuntime().stopAll(true))
   registerHandler(ELECTRON_IPC_CHANNELS.appModeRestart, () => {
     isQuitting = true
     app.relaunch()
@@ -541,6 +382,10 @@ async function createMainWindow() {
       sandbox: true,
     },
   })
+  configureLocalServerRequestAuth(
+    mainWindow.webContents.session.webRequest,
+    resolveLocalServerAccess,
+  )
 
   installMainWindowNavigationGuards(mainWindow.webContents, { openExternal: openExternalUrl })
   installPreviewCleanupOnRendererNavigation(mainWindow.webContents, () => {
@@ -554,7 +399,8 @@ async function createMainWindow() {
   })
 
   mainWindow.on('resize', () => {
-    mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.windowResized)
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send(ELECTRON_EVENT_CHANNELS.windowResized)
   })
   mainWindow.webContents.on('did-finish-load', () => {
     writeWindowSmokeSnapshot(mainWindow, 'did-finish-load')
@@ -565,10 +411,21 @@ async function createMainWindow() {
 
   writeWindowSmokeSnapshot(mainWindow, 'after-create')
 
-  await loadRendererEntry(mainWindow)
-
-  restoreWindowMaximized(mainWindow, restoredState)
-  showMainWindow(mainWindow, app)
+  await loadAndRevealMainWindow({
+    load: () => loadRendererEntry(mainWindow!),
+    beforeReveal: () => restoreWindowMaximized(mainWindow!, restoredState),
+    reveal: () => showMainWindow(mainWindow, app),
+    onLoadFailure: (error) => {
+      const detail = sanitizeHostDiagnostic(error instanceof Error ? error.message : String(error))
+      console.error(`[desktop] failed to load Electron renderer: ${detail}`)
+      writeWindowSmokeSnapshot(mainWindow, 'renderer-load-failed')
+      dialog.showErrorBox(
+        '启动错误 / Startup Error',
+        `桌面界面加载失败，请重启应用。如果问题持续存在，请附上诊断日志反馈。\n\nThe desktop interface could not be loaded. Restart the app and include diagnostics when reporting the problem.\n\n${detail}`,
+      )
+    },
+  })
+  refreshWindowsDragHitTest(mainWindow, process.platform)
   writeWindowSmokeSnapshot(mainWindow, 'after-final-show')
 }
 
@@ -581,6 +438,11 @@ registerIpcHandlers()
 app.whenReady().then(async () => {
   applyWindowsAppUserModelId(app)
   applyStartupPortableMode(app)
+  screen.on('display-metrics-changed', (_event, _display, changedMetrics) => {
+    if (changedMetrics.includes('scaleFactor') || changedMetrics.includes('bounds')) {
+      previewService?.refreshBounds()
+    }
+  })
   await getServerRuntime().startServer().catch(error => {
     console.error('[desktop] failed to start Electron server sidecar', error)
   })

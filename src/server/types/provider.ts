@@ -9,10 +9,16 @@ import { z } from 'zod'
 
 export const CLAUDE_OFFICIAL_PROVIDER_ID = 'claude-official'
 export const OPENAI_OFFICIAL_PROVIDER_ID = 'openai-official'
+export const GROK_OFFICIAL_PROVIDER_ID = 'grok-official'
 export const BUILT_IN_PROVIDER_IDS = [
   CLAUDE_OFFICIAL_PROVIDER_ID,
   OPENAI_OFFICIAL_PROVIDER_ID,
+  GROK_OFFICIAL_PROVIDER_ID,
 ] as const
+
+export function isBuiltInProviderId(id: string | null | undefined): boolean {
+  return !!id && (BUILT_IN_PROVIDER_IDS as readonly string[]).includes(id)
+}
 
 export const ApiFormatSchema = z.enum([
   'anthropic',         // Native Anthropic Messages API (passthrough, no proxy)
@@ -33,6 +39,7 @@ export type ProviderAuthStrategy = z.infer<typeof ProviderAuthStrategySchema>
 export const ProviderRuntimeKindSchema = z.enum([
   'anthropic_compatible',
   'openai_oauth',
+  'grok_oauth',
 ])
 export type ProviderRuntimeKind = z.infer<typeof ProviderRuntimeKindSchema>
 
@@ -43,11 +50,20 @@ export const ModelMappingSchema = z.object({
   opus: z.string(),
 })
 
+export const Model1mSupportSchema = z.object({
+  main: z.boolean(),
+  haiku: z.boolean(),
+  sonnet: z.boolean(),
+  opus: z.boolean(),
+})
+
 export const AutoCompactWindowSchema = z.number().int().min(16000).max(10000000)
 export const ModelContextWindowsSchema = z.record(
   z.string().min(1),
   z.number().int().min(16000).max(10000000),
 )
+export const ToolSearchEnabledSchema = z.boolean()
+export const DisableExperimentalBetasSchema = z.boolean()
 
 export const SavedProviderSchema = z.object({
   id: z.string(),
@@ -59,8 +75,11 @@ export const SavedProviderSchema = z.object({
   apiFormat: ApiFormatSchema.default('anthropic'),
   runtimeKind: ProviderRuntimeKindSchema.default('anthropic_compatible'),
   models: ModelMappingSchema,
+  model1mSupport: Model1mSupportSchema.optional(),
   autoCompactWindow: AutoCompactWindowSchema.optional(),
   modelContextWindows: ModelContextWindowsSchema.optional(),
+  toolSearchEnabled: ToolSearchEnabledSchema.optional(),
+  disableExperimentalBetas: DisableExperimentalBetasSchema.optional(),
   notes: z.string().optional(),
 })
 
@@ -80,8 +99,11 @@ export const CreateProviderSchema = z.object({
   apiFormat: ApiFormatSchema.default('anthropic'),
   runtimeKind: ProviderRuntimeKindSchema.default('anthropic_compatible'),
   models: ModelMappingSchema,
+  model1mSupport: Model1mSupportSchema.optional(),
   autoCompactWindow: AutoCompactWindowSchema.optional(),
   modelContextWindows: ModelContextWindowsSchema.optional(),
+  toolSearchEnabled: ToolSearchEnabledSchema.optional(),
+  disableExperimentalBetas: DisableExperimentalBetasSchema.optional(),
   notes: z.string().optional(),
 })
 
@@ -93,8 +115,11 @@ export const UpdateProviderSchema = z.object({
   apiFormat: ApiFormatSchema.optional(),
   runtimeKind: ProviderRuntimeKindSchema.optional(),
   models: ModelMappingSchema.optional(),
+  model1mSupport: Model1mSupportSchema.nullable().optional(),
   autoCompactWindow: AutoCompactWindowSchema.nullable().optional(),
   modelContextWindows: ModelContextWindowsSchema.nullable().optional(),
+  toolSearchEnabled: ToolSearchEnabledSchema.optional(),
+  disableExperimentalBetas: DisableExperimentalBetasSchema.optional(),
   notes: z.string().optional(),
 })
 
@@ -114,6 +139,7 @@ export const ReorderProvidersSchema = z.object({
 
 // TypeScript types
 export type ModelMapping = z.infer<typeof ModelMappingSchema>
+export type Model1mSupport = z.infer<typeof Model1mSupportSchema>
 export type SavedProvider = z.infer<typeof SavedProviderSchema>
 export type ProvidersIndex = z.infer<typeof ProvidersIndexSchema>
 export type CreateProviderInput = z.infer<typeof CreateProviderSchema>

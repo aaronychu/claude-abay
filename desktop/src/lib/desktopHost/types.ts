@@ -7,6 +7,7 @@ export type DesktopHostKind = 'browser' | 'electron'
 
 export type DesktopHostCapability =
   | 'appMode'
+  | 'clipboard'
   | 'dialogs'
   | 'notifications'
   | 'previewWebview'
@@ -135,23 +136,23 @@ export type AppModeSetInput = {
   portableDir: string | null
 }
 
-export type PortableDirDetection = {
-  defaultPortableDir: string | null
-  hasData: boolean
-}
-
 export type DesktopHost = {
   kind: DesktopHostKind
   isDesktop: boolean
   capabilities: DesktopHostCapabilities
   runtime: {
     getServerUrl(): Promise<string>
+    getLocalAccessToken(): Promise<string | null>
   }
   app: {
     getVersion(): Promise<string>
   }
   commands: {
     invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>
+  }
+  clipboard: {
+    readText(): Promise<string>
+    writeText(text: string): Promise<void>
   }
   events: {
     listen<T>(eventName: string, handler: (payload: T) => void): Promise<DesktopHostUnlisten>
@@ -209,6 +210,7 @@ export type DesktopHost = {
     navigate(url: string): Promise<void>
     setBounds(bounds: PreviewBounds): Promise<void>
     setVisible(visible: boolean): Promise<void>
+    setZoom(level: number): Promise<void>
     close(): Promise<void>
     message(payload: PreviewHostMessage): Promise<void>
     onEvent(handler: (event: unknown) => void): Promise<DesktopHostUnlisten>
@@ -216,7 +218,6 @@ export type DesktopHost = {
   appMode: {
     get(): Promise<AppModeConfig>
     set(config: AppModeSetInput): Promise<void>
-    detectPortableDir(): Promise<PortableDirDetection | null>
     prepareRestart(): Promise<void>
     restart(): Promise<void>
   }

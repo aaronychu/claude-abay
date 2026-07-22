@@ -338,7 +338,7 @@ describe('openTargetService', () => {
 
   it('reports missing tilde paths with the expanded home path', async () => {
     const { service } = createService('darwin')
-    const missing = `~/cc-haha-missing-${Date.now()}/report.html`
+    const missing = `~/claude-abay-missing-${Date.now()}/report.html`
 
     const rejection = expect(service.openTarget({ targetId: 'finder', path: missing })).rejects
     await rejection.toMatchObject({ code: 'OPEN_TARGET_PATH_MISSING' })
@@ -347,7 +347,7 @@ describe('openTargetService', () => {
 
   it('expands Windows backslash tilde paths on win32', async () => {
     const { service } = createService('win32')
-    const missing = `~\\cc-haha-missing-${Date.now()}\\report.html`
+    const missing = `~\\claude-abay-missing-${Date.now()}\\report.html`
 
     const rejection = expect(service.openTarget({ targetId: 'explorer', path: missing })).rejects
     await rejection.toMatchObject({ code: 'OPEN_TARGET_PATH_MISSING' })

@@ -7,6 +7,7 @@ import type { MessageEntry } from './sessionService.js'
 import type { FileHistorySnapshot } from '../../utils/fileHistory.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { isWithinRegisteredFilesystemRoot } from './filesystemAccessRoots.js'
+import { collectErroredToolUseIds } from './transcriptToolResults.js'
 import {
   isSameOrInsidePathForPlatform,
   normalizeDriveRootPathForPlatform,
@@ -562,25 +563,27 @@ export class WorkspaceService {
       }
     }
 
-    const sessionDiff = await this.getSessionDiff(sessionId, resolvedPath.relativePath)
-    if (sessionDiff) {
-      return { state: 'ok', path: resolvedPath.relativePath, diff: sessionDiff }
-    }
-
-    const fileHistoryDiff = await this.getFileHistoryDiff(
-      sessionId,
-      resolvedPath.workspaceRoot,
-      resolvedPath.relativePath,
-    )
-    if (fileHistoryDiff) {
-      return { state: 'ok', path: resolvedPath.relativePath, diff: fileHistoryDiff }
-    }
-
     const repoInfo = await this.getGitRepoInfo(resolvedPath.workspaceRoot)
     if (repoInfo.kind === 'not_git_repo') {
+      const storedDiff = await this.getStoredWorkspaceDiff(
+        sessionId,
+        resolvedPath.workspaceRoot,
+        resolvedPath.relativePath,
+      )
+      if (storedDiff) {
+        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+      }
       return { state: 'not_git_repo', path: resolvedPath.relativePath }
     }
     if (repoInfo.kind === 'error') {
+      const storedDiff = await this.getStoredWorkspaceDiff(
+        sessionId,
+        resolvedPath.workspaceRoot,
+        resolvedPath.relativePath,
+      )
+      if (storedDiff) {
+        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+      }
       return {
         state: 'error',
         path: resolvedPath.relativePath,
@@ -590,6 +593,14 @@ export class WorkspaceService {
 
     const statusEntries = await this.getStatusEntries(repoInfo.repoRoot)
     if (statusEntries.kind === 'error') {
+      const storedDiff = await this.getStoredWorkspaceDiff(
+        sessionId,
+        resolvedPath.workspaceRoot,
+        resolvedPath.relativePath,
+      )
+      if (storedDiff) {
+        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+      }
       return {
         state: 'error',
         path: resolvedPath.relativePath,
@@ -613,6 +624,14 @@ export class WorkspaceService {
     )
 
     if (!statusEntry) {
+      const storedDiff = await this.getStoredWorkspaceDiff(
+        sessionId,
+        resolvedPath.workspaceRoot,
+        resolvedPath.relativePath,
+      )
+      if (storedDiff) {
+        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
+      }
       return { state: 'missing', path: resolvedPath.relativePath }
     }
 
@@ -650,6 +669,21 @@ export class WorkspaceService {
     return { state: 'ok', path: resolvedPath.relativePath, diff: diff.diff }
   }
 
+  private async getStoredWorkspaceDiff(
+    sessionId: string,
+    workspaceRoot: string,
+    relativePath: string,
+  ): Promise<string | null> {
+    const sessionDiff = await this.getSessionDiff(sessionId, relativePath)
+    if (sessionDiff) return sessionDiff
+
+    return await this.getFileHistoryDiff(
+      sessionId,
+      workspaceRoot,
+      relativePath,
+    )
+  }
+
   private async getSessionDiff(
     sessionId: string,
     relativePath: string,
@@ -679,6 +713,7 @@ export class WorkspaceService {
     }
 
     const changes = new Map<string, SessionFileChange>()
+    const erroredToolUseIds = collectErroredToolUseIds(messages)
 
     for (const message of messages) {
       if (message.type !== 'tool_use' || !Array.isArray(message.content)) continue
@@ -687,6 +722,7 @@ export class WorkspaceService {
         if (!block || typeof block !== 'object') continue
         const record = block as Record<string, unknown>
         if (record.type !== 'tool_use' || typeof record.name !== 'string') continue
+        if (typeof record.id === 'string' && erroredToolUseIds.has(record.id)) continue
         const input = record.input
         if (!input || typeof input !== 'object') continue
 

@@ -9,6 +9,7 @@ import { useTabStore } from './tabStore'
 import { randomSpinnerVerb } from '../config/spinnerVerbs'
 import { notifyDesktop } from '../lib/desktopNotifications'
 import { deriveSessionTitle, isPlaceholderSessionTitle } from '../lib/sessionTitle'
+import { hasRunningBackgroundTasks } from '../lib/backgroundTasks'
 import { AGENT_LIFECYCLE_TYPES } from '../types/team'
 import type { ComposerAttachment } from '../lib/composerAttachments'
 import type { MessageEntry } from '../types/session'
@@ -66,6 +67,23 @@ export type ComposerReferenceInsertion = {
 
 export type ComposerPrefillMode = 'replace' | 'append'
 
+export type PendingPermission = {
+  requestId: string
+  toolName: string
+  toolUseId?: string
+  input: unknown
+  description?: string
+}
+
+type PendingPermissions = Record<string, PendingPermission>
+
+type PendingComputerUsePermission = {
+  requestId: string
+  request: ComputerUsePermissionRequest
+}
+
+type PendingComputerUsePermissions = Record<string, PendingComputerUsePermission>
+
 export type PerSessionState = {
   messages: UIMessage[]
   chatState: ChatState
@@ -77,17 +95,13 @@ export type PerSessionState = {
   activeToolUseId: string | null
   activeToolName: string | null
   activeThinkingId: string | null
-  pendingPermission: {
-    requestId: string
-    toolName: string
-    toolUseId?: string
-    input: unknown
-    description?: string
-  } | null
-  pendingComputerUsePermission: {
-    requestId: string
-    request: ComputerUsePermissionRequest
-  } | null
+  /** Most recently received request, retained as a compatibility mirror. */
+  pendingPermission: PendingPermission | null
+  /** Authoritative set of outstanding SDK permission requests, keyed by request id. */
+  pendingPermissions?: PendingPermissions
+  /** Currently displayed Computer Use request; remaining requests stay queued. */
+  pendingComputerUsePermission: PendingComputerUsePermission | null
+  pendingComputerUsePermissions?: PendingComputerUsePermissions
   tokenUsage: TokenUsage
   /**
    * Bumped each time a compact boundary arrives. The context usage indicator
@@ -102,14 +116,20 @@ export type PerSessionState = {
    * indicator — same estimation the CLI spinner uses. Reset on each send.
    */
   streamingResponseChars: number
+  /** Boundary used to discard one failed, side-effect-free stream attempt. */
+  streamAttemptStartIndex?: number
+  streamAttemptStartResponseChars?: number
   elapsedSeconds: number
   statusVerb: string
   apiRetry?: ApiRetryState | null
-  // 流式→非流式降级提示（活动回合状态，与 apiRetry 同清除时机）。
+  // 流式恢复/非流式降级提示（活动回合状态，与 apiRetry 同清除时机）。
   streamingFallback?: StreamingFallbackState | null
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>
   agentTaskNotifications: Record<string, AgentTaskNotification>
   backgroundAgentTasks?: Record<string, BackgroundAgentTask>
+  stoppingBackgroundTaskIds?: Record<string, boolean>
+  suppressNextTaskNotificationResponse?: boolean
+  replaceHistoryOnCompletion?: boolean
   activeGoal?: ActiveGoalState | null
   elapsedTimer: ReturnType<typeof setInterval> | null
   composerPrefill?: {
@@ -135,7 +155,9 @@ const DEFAULT_SESSION_STATE: PerSessionState = {
   activeToolName: null,
   activeThinkingId: null,
   pendingPermission: null,
+  pendingPermissions: {},
   pendingComputerUsePermission: null,
+  pendingComputerUsePermissions: {},
   tokenUsage: { input_tokens: 0, output_tokens: 0 },
   compactCount: 0,
   streamingResponseChars: 0,
@@ -146,6 +168,9 @@ const DEFAULT_SESSION_STATE: PerSessionState = {
   slashCommands: [],
   agentTaskNotifications: {},
   backgroundAgentTasks: {},
+  stoppingBackgroundTaskIds: {},
+  suppressNextTaskNotificationResponse: false,
+  replaceHistoryOnCompletion: false,
   activeGoal: null,
   elapsedTimer: null,
   composerPrefill: null,
@@ -161,6 +186,73 @@ function createDefaultSessionState(): PerSessionState {
     tokenUsage: { input_tokens: 0, output_tokens: 0 },
     queuedUserMessages: [],
   }
+}
+
+function getPendingPermissionRecord(
+  session: Pick<PerSessionState, 'pendingPermission' | 'pendingPermissions'>,
+): PendingPermissions {
+  const pendingPermissions = { ...(session.pendingPermissions ?? {}) }
+  if (session.pendingPermission && !pendingPermissions[session.pendingPermission.requestId]) {
+    pendingPermissions[session.pendingPermission.requestId] = session.pendingPermission
+  }
+  return pendingPermissions
+}
+
+function getPendingComputerUsePermissionRecord(
+  session: Pick<PerSessionState, 'pendingComputerUsePermission' | 'pendingComputerUsePermissions'>,
+): PendingComputerUsePermissions {
+  const pendingPermissions = { ...(session.pendingComputerUsePermissions ?? {}) }
+  if (
+    session.pendingComputerUsePermission &&
+    !pendingPermissions[session.pendingComputerUsePermission.requestId]
+  ) {
+    pendingPermissions[session.pendingComputerUsePermission.requestId] =
+      session.pendingComputerUsePermission
+  }
+  return pendingPermissions
+}
+
+function getCurrentComputerUsePermission(
+  pendingPermissions: PendingComputerUsePermissions,
+  currentPermission: PendingComputerUsePermission | null,
+): PendingComputerUsePermission | null {
+  return (currentPermission
+    ? pendingPermissions[currentPermission.requestId]
+    : undefined) ?? Object.values(pendingPermissions)[0] ?? null
+}
+
+function hasPendingPermissionRequests(session: PerSessionState): boolean {
+  return Object.keys(getPendingPermissionRecord(session)).length > 0 ||
+    Object.keys(getPendingComputerUsePermissionRecord(session)).length > 0
+}
+
+function getChatStateAfterPermissionResolution(
+  session: PerSessionState,
+  hasRemainingPermissions: boolean,
+  allowed: boolean | undefined,
+): ChatState {
+  if (hasRemainingPermissions) return 'permission_pending'
+  if (allowed === true) return 'tool_executing'
+  if (allowed === false) return 'idle'
+  return session.chatState === 'permission_pending' ? 'thinking' : session.chatState
+}
+
+export function listPendingPermissions(
+  session: Pick<PerSessionState, 'pendingPermission' | 'pendingPermissions'> | undefined,
+): PendingPermission[] {
+  return session ? Object.values(getPendingPermissionRecord(session)) : []
+}
+
+export function getPendingPermission(
+  session: Pick<PerSessionState, 'pendingPermission' | 'pendingPermissions'> | undefined,
+  requestId: string,
+): PendingPermission | undefined {
+  if (!session) return undefined
+  return session.pendingPermissions?.[requestId] ?? (
+    session.pendingPermission?.requestId === requestId
+      ? session.pendingPermission
+      : undefined
+  )
 }
 
 type ChatStore = {
@@ -194,8 +286,15 @@ type ChatStore = {
   setSessionRuntime: (sessionId: string, selection: RuntimeSelection) => void
   setSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void
   stopGeneration: (sessionId: string) => void
+  stopBackgroundTask: (sessionId: string, taskId: string) => void
   loadHistory: (sessionId: string) => Promise<void>
-  reloadHistory: (sessionId: string) => Promise<void>
+  reloadHistory: (
+    sessionId: string,
+    guard?: {
+      messages: UIMessage[]
+      backgroundAgentTasks?: Record<string, BackgroundAgentTask>
+    },
+  ) => Promise<void>
   queueComposerPrefill: (
     sessionId: string,
     prefill: { text: string; attachments?: UIAttachment[]; mode?: ComposerPrefillMode },
@@ -354,6 +453,30 @@ function upsertToolUseMessage(
   const next = [...messages]
   next[existingIndex] = build(messages[existingIndex] as ToolCall)
   return next
+}
+
+function markPendingToolUseMessagesStopped(messages: UIMessage[]): UIMessage[] {
+  const resolvedToolUseIds = new Set(
+    messages
+      .filter((message) => message.type === 'tool_result')
+      .map((message) => message.toolUseId),
+  )
+  let changed = false
+  const stoppedMessages = messages.map((message) => {
+    if (
+      message.type !== 'tool_use' ||
+      (!message.isPending && resolvedToolUseIds.has(message.toolUseId))
+    ) {
+      return message
+    }
+    changed = true
+    return {
+      ...message,
+      isPending: false,
+      status: 'stopped' as const,
+    }
+  })
+  return changed ? stoppedMessages : messages
 }
 
 // Streaming throttle for content_delta. Buffers must be per-session because
@@ -583,6 +706,22 @@ function upsertBackgroundTaskMessage(
       : message)
 }
 
+function buildBackgroundTaskSessionUpdate(
+  session: PerSessionState,
+  backgroundAgentTasks: Record<string, BackgroundAgentTask>,
+  task: BackgroundAgentTask | undefined,
+  timestamp: number,
+): Partial<PerSessionState> {
+  const messages = task
+    ? upsertBackgroundTaskMessage(session.messages, task, timestamp)
+    : session.messages
+
+  return {
+    backgroundAgentTasks,
+    ...(messages !== session.messages ? { messages } : {}),
+  }
+}
+
 function mergeBackgroundTaskMessages(
   messages: UIMessage[],
   tasks: Record<string, BackgroundAgentTask>,
@@ -595,12 +734,21 @@ function mergeBackgroundTaskMessages(
 }
 
 function isAgentBackgroundTask(task: Pick<BackgroundAgentTask, 'taskType' | 'summary'>): boolean {
-  if (task.taskType === 'local_agent' || task.taskType === 'remote_agent') {
+  if (task.taskType === 'local_agent' || task.taskType === 'remote_agent' || task.taskType === 'dream') {
     return true
   }
   return /^Agent (?:(?:"[^"]+" )?(completed|was stopped)|(?:"[^"]+" )?failed(?::|$))/.test(
     task.summary ?? '',
   )
+}
+
+function shouldSuppressTaskNotificationResponse(session: PerSessionState): boolean {
+  if (session.chatState !== 'idle') return false
+  const lastMessage = session.messages[session.messages.length - 1]
+  const hasVisibleActiveOutput =
+    session.streamingText.trim().length > 0 ||
+    Boolean(session.activeToolUseId)
+  return !hasVisibleActiveOutput && lastMessage?.type !== 'user_text'
 }
 
 function mergeRestoredTerminalGoalEvents(
@@ -735,6 +883,24 @@ function refreshCompletedTranscriptHistory(
   })
 }
 
+function reconcileCompletedTranscriptHistory(
+  get: () => ChatStore,
+  sessionId: string,
+  replaceHistory: boolean,
+): void {
+  if (!replaceHistory) {
+    refreshCompletedTranscriptHistory(get, sessionId)
+    return
+  }
+
+  const session = get().sessions[sessionId]
+  if (!session) return
+  void get().reloadHistory(sessionId, {
+    messages: session.messages,
+    backgroundAgentTasks: session.backgroundAgentTasks,
+  })
+}
+
 function normalizeMemoryEventFiles(data: unknown): MemoryEventFile[] {
   if (!data || typeof data !== 'object') return []
   const writtenPaths = (data as { writtenPaths?: unknown }).writtenPaths
@@ -826,6 +992,37 @@ function mergeSlashCommandUpdates(
   return [...merged.values()]
 }
 
+function readUsageToken(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function summarizeTokenUsageFromHistory(messages: MessageEntry[]): TokenUsage | null {
+  let inputTokens = 0
+  let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheCreationTokens = 0
+
+  for (const message of messages) {
+    const usage = message.usage
+    if (!usage) continue
+    inputTokens += readUsageToken(usage.input_tokens)
+    outputTokens += readUsageToken(usage.output_tokens)
+    cacheReadTokens += readUsageToken(usage.cache_read_input_tokens)
+    cacheCreationTokens += readUsageToken(usage.cache_creation_input_tokens)
+  }
+
+  if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && cacheCreationTokens === 0) {
+    return null
+  }
+
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    ...(cacheReadTokens > 0 ? { cache_read_tokens: cacheReadTokens } : {}),
+    ...(cacheCreationTokens > 0 ? { cache_creation_tokens: cacheCreationTokens } : {}),
+  }
+}
+
 async function fetchAndMapSessionHistory(sessionId: string) {
   const { messages, taskNotifications } = await sessionsApi.getMessages(sessionId)
   const uiMessages = mapHistoryMessagesToUiMessages(messages)
@@ -841,10 +1038,16 @@ async function fetchAndMapSessionHistory(sessionId: string) {
     restoredBackgroundTasks: backgroundTaskRecordFromNotifications(Object.values(restoredNotifications)),
     lastTodos: extractLastTodoWriteFromHistory(messages),
     hasMessagesAfterTaskCompletion: hasUserMessagesAfterTaskCompletion(messages),
+    tokenUsage: summarizeTokenUsageFromHistory(messages),
   }
 }
 
 const historyLoadsInFlight = new Map<string, Promise<void>>()
+
+function shouldPrewarmSession(sessionId: string): boolean {
+  const knownSession = useSessionStore.getState().sessions.find((session) => session.id === sessionId)
+  return knownSession?.messageCount === 0
+}
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   sessions: {},
@@ -892,7 +1095,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (runtimeSelection) {
       wsManager.send(sessionId, { type: 'set_runtime_config', ...runtimeSelection })
     }
-    if (!sessionId.startsWith('__') && !useTeamStore.getState().getMemberBySessionId(sessionId)) {
+    if (
+      !sessionId.startsWith('__') &&
+      !useTeamStore.getState().getMemberBySessionId(sessionId) &&
+      shouldPrewarmSession(sessionId)
+    ) {
       wsManager.send(sessionId, { type: 'prewarm_session' })
     }
 
@@ -946,6 +1153,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             mimeType: a.mimeType,
             lineStart: a.lineStart,
             lineEnd: a.lineEnd,
+            diffSide: a.diffSide,
+            hunkId: a.hunkId,
             note: a.note,
             quote: a.quote,
           }))
@@ -970,16 +1179,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const session = s.sessions[sessionId] ?? createDefaultSessionState()
       const bufferedDelta = consumePendingDelta(sessionId)
       const pendingAssistantText = `${session.streamingText}${bufferedDelta}`
+      const now = Date.now()
 
       const newMessages = pendingAssistantText.trim()
-        ? appendAssistantTextMessage(session.messages, pendingAssistantText, Date.now())
+        ? appendAssistantTextMessage(session.messages, pendingAssistantText, now)
         : [...session.messages]
       if (!isMemberSession && allTasksDone) {
         newMessages.push({
           id: nextId(),
           type: 'task_summary',
           tasks: completedTaskSummary,
-          timestamp: Date.now(),
+          timestamp: now,
         })
       }
       newMessages.push({
@@ -988,7 +1198,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         content: userFacingContent,
         ...(userFacingContent !== modelFacingContent ? { modelContent: modelFacingContent } : {}),
         attachments: isMemberSession ? undefined : uiAttachments,
-        timestamp: Date.now(),
+        timestamp: now,
         ...(isMemberSession ? { pending: true } : {}),
       })
 
@@ -1008,6 +1218,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             messages: newMessages,
             chatState: 'thinking',
             elapsedSeconds: 0,
+            suppressNextTaskNotificationResponse: false,
+            replaceHistoryOnCompletion: false,
             streamingText: '',
             streamingResponseChars: 0,
             statusVerb: isMemberSession ? '' : randomSpinnerVerb(),
@@ -1055,7 +1267,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ...(options?.denyMessage ? { denyMessage: options.denyMessage } : {}),
       ...(options?.permissionUpdates?.length ? { permissionUpdates: options.permissionUpdates } : {}),
     })
-    set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, () => ({ pendingPermission: null, chatState: allowed ? 'tool_executing' : 'idle' })) }))
+    set((s) => ({
+      sessions: updateSessionIn(s.sessions, sessionId, (session) => {
+        const pendingPermissions = getPendingPermissionRecord(session)
+        delete pendingPermissions[requestId]
+        const remainingPermissions = Object.values(pendingPermissions)
+
+        return {
+          pendingPermissions,
+          pendingPermission: remainingPermissions[remainingPermissions.length - 1] ?? null,
+          chatState: remainingPermissions.length > 0 ||
+            Object.keys(getPendingComputerUsePermissionRecord(session)).length > 0
+            ? 'permission_pending'
+            : allowed ? 'tool_executing' : 'idle',
+        }
+      }),
+    }))
   },
 
   respondToComputerUsePermission: (sessionId, requestId, response) => {
@@ -1065,10 +1292,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       response,
     })
     set((s) => ({
-      sessions: updateSessionIn(s.sessions, sessionId, () => ({
-        pendingComputerUsePermission: null,
-        chatState: response.userConsented === false ? 'idle' : 'tool_executing',
-      })),
+      sessions: updateSessionIn(s.sessions, sessionId, (session) => {
+        const pendingComputerUsePermissions = getPendingComputerUsePermissionRecord(session)
+        delete pendingComputerUsePermissions[requestId]
+        const remainingPermissions = Object.values(pendingComputerUsePermissions)
+
+        return {
+          pendingComputerUsePermissions,
+          pendingComputerUsePermission: getCurrentComputerUsePermission(
+            pendingComputerUsePermissions,
+            session.pendingComputerUsePermission,
+          ),
+          chatState: Object.keys(getPendingPermissionRecord(session)).length > 0 ||
+            remainingPermissions.length > 0
+            ? 'permission_pending'
+            : response.userConsented === false ? 'idle' : 'tool_executing',
+        }
+      }),
     }))
   },
 
@@ -1080,37 +1320,69 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   setSessionPermissionMode: (sessionId, mode) => {
-    if (!get().sessions[sessionId]) return
-    useSessionStore.getState().updateSessionPermissionMode(sessionId, mode)
+    const session = get().sessions[sessionId]
+    if (!session || session.chatState !== 'idle') return
     wsManager.send(sessionId, { type: 'set_permission_mode', mode })
   },
 
   stopGeneration: (sessionId) => {
     wsManager.send(sessionId, { type: 'stop_generation' })
-    if (pendingDeltaBySession.has(sessionId)) {
-      const text = consumePendingDelta(sessionId)
-      set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, (sess) => ({ streamingText: sess.streamingText + text })) }))
-    }
+    const bufferedText = consumePendingDelta(sessionId)
     clearPendingToolInputDelta(sessionId)
+    clearPendingTaskToolUseIds(sessionId)
+    clearPendingToolParentUseIds(sessionId)
+    let hasRunningBackgroundAgents = false
     set((s) => {
       const session = s.sessions[sessionId]
       if (!session) return s
+      hasRunningBackgroundAgents = hasRunningBackgroundTasks(session.backgroundAgentTasks)
       if (session.elapsedTimer) clearInterval(session.elapsedTimer)
+      const pendingAssistantText = `${session.streamingText}${bufferedText}`
+      const messagesWithFlushedText = pendingAssistantText.trim()
+        ? appendAssistantTextMessage(session.messages, pendingAssistantText, Date.now())
+        : session.messages
       return {
         sessions: {
           ...s.sessions,
           [sessionId]: {
             ...session,
+            messages: markPendingToolUseMessagesStopped(messagesWithFlushedText),
             chatState: 'idle',
+            activeToolUseId: null,
+            activeToolName: null,
+            activeThinkingId: null,
+            streamingText: '',
+            streamingToolInput: '',
+            statusVerb: '',
             pendingPermission: null,
+            pendingPermissions: {},
             pendingComputerUsePermission: null,
+            pendingComputerUsePermissions: {},
             apiRetry: null,
             streamingFallback: null,
+            suppressNextTaskNotificationResponse: false,
             elapsedTimer: null,
           },
         },
       }
     })
+    useTabStore.getState().updateTabStatus(sessionId, hasRunningBackgroundAgents ? 'running' : 'idle')
+  },
+
+  stopBackgroundTask: (sessionId, taskId) => {
+    const session = get().sessions[sessionId]
+    const task = session?.backgroundAgentTasks?.[taskId]
+    if (!task || task.status !== 'running' || session?.stoppingBackgroundTaskIds?.[taskId]) return
+
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (current) => ({
+        stoppingBackgroundTaskIds: {
+          ...current.stoppingBackgroundTaskIds,
+          [taskId]: true,
+        },
+      })),
+    }))
+    wsManager.send(sessionId, { type: 'stop_background_task', taskId })
   },
 
   loadHistory: async (sessionId) => {
@@ -1137,6 +1409,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           restoredBackgroundTasks,
           lastTodos,
           hasMessagesAfterTaskCompletion,
+          tokenUsage,
         } = await fetchAndMapSessionHistory(sessionId)
         set((state) => {
           const session = state.sessions[sessionId]
@@ -1151,6 +1424,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 s.backgroundAgentTasks ?? {},
                 restoredBackgroundTasks,
               ),
+              tokenUsage: tokenUsage ?? s.tokenUsage,
               messages: mergeRestoredHistoryIntoLiveMessages(
                 mergeBackgroundTaskMessages(s.messages, restoredBackgroundTasks),
                 uiMessages,
@@ -1167,6 +1441,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               s.backgroundAgentTasks ?? {},
               restoredBackgroundTasks,
             ),
+            tokenUsage: tokenUsage ?? s.tokenUsage,
           })) }
         })
         if (lastTodos && lastTodos.length > 0) {
@@ -1201,7 +1476,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     return load
   },
 
-  reloadHistory: async (sessionId) => {
+  reloadHistory: async (sessionId, guard) => {
     try {
       const {
         uiMessages,
@@ -1210,7 +1485,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         restoredBackgroundTasks,
         lastTodos,
         hasMessagesAfterTaskCompletion,
+        tokenUsage,
       } = await fetchAndMapSessionHistory(sessionId)
+
+      if (guard) {
+        const current = get().sessions[sessionId]
+        if (
+          !current ||
+          current.chatState !== 'idle' ||
+          current.messages !== guard.messages ||
+          current.backgroundAgentTasks !== guard.backgroundAgentTasks
+        ) {
+          return
+        }
+      }
 
       set((state) => {
         const session = state.sessions[sessionId]
@@ -1224,6 +1512,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             activeGoal,
             agentTaskNotifications: restoredNotifications,
             backgroundAgentTasks: restoredBackgroundTasks,
+            tokenUsage: tokenUsage ?? session.tokenUsage,
             chatState: 'idle',
             activeThinkingId: null,
             activeToolUseId: null,
@@ -1231,7 +1520,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             streamingText: '',
             streamingToolInput: '',
             pendingPermission: null,
+            pendingPermissions: {},
             pendingComputerUsePermission: null,
+            pendingComputerUsePermissions: {},
             elapsedTimer: null,
             statusVerb: '',
             apiRetry: null,
@@ -1398,6 +1689,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           queuedUserMessages: (currentSession.queuedUserMessages ?? [])
             .filter((message) => message.id !== messageId),
           ...(pendingText.trim() ? { streamingText: '' } : {}),
+          suppressNextTaskNotificationResponse: false,
+          replaceHistoryOnCompletion: false,
         }
       }),
     }))
@@ -1420,6 +1713,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       chatState: 'idle',
       apiRetry: null,
       streamingFallback: null,
+      suppressNextTaskNotificationResponse: false,
+      replaceHistoryOnCompletion: false,
       queuedUserMessages: [],
     })) }))
   },
@@ -1428,10 +1723,123 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const update = (updater: (session: PerSessionState) => Partial<PerSessionState>) => {
       set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, updater) }))
     }
+    const ensureElapsedTimer = () => {
+      const session = get().sessions[sessionId]
+      if (!session || session.elapsedTimer) return
+      const timer = setInterval(() => {
+        set((st) => ({
+          sessions: updateSessionIn(st.sessions, sessionId, (sess) => ({
+            elapsedSeconds: sess.elapsedSeconds + 1,
+          })),
+        }))
+      }, 1000)
+      update(() => ({ elapsedTimer: timer }))
+    }
+    const clearElapsedTimer = () => {
+      const session = get().sessions[sessionId]
+      if (!session?.elapsedTimer) return
+      clearInterval(session.elapsedTimer)
+      update(() => ({ elapsedTimer: null }))
+    }
 
     switch (msg.type) {
       case 'connected':
         break
+
+      case 'session_state': {
+        const session = get().sessions[sessionId]
+        if (!session) break
+
+        if (msg.turnState === 'running') {
+          // Raw deltas are not replayable across a socket gap. Discard the
+          // uncommitted attempt instead of appending new deltas (or a missed
+          // stream_retry attempt) to stale text/tool JSON. Persisted completed
+          // messages are merged back below while the turn remains running.
+          consumePendingDelta(sessionId)
+          clearPendingToolInputDelta(sessionId)
+          clearPendingTaskToolUseIds(sessionId)
+          clearPendingToolParentUseIds(sessionId)
+          update((current) => {
+            const startIndex = Math.max(
+              0,
+              Math.min(
+                current.streamAttemptStartIndex ?? current.messages.length,
+                current.messages.length,
+              ),
+            )
+            return {
+              messages: [
+                ...current.messages.slice(0, startIndex),
+                ...current.messages.slice(startIndex).filter((message) =>
+                  message.type !== 'assistant_text' &&
+                  message.type !== 'thinking' &&
+                  !(message.type === 'tool_use' && message.isPending)),
+              ],
+              chatState: 'thinking',
+              streamingText: '',
+              streamingToolInput: '',
+              activeThinkingId: null,
+              activeToolUseId: null,
+              activeToolName: null,
+              streamingResponseChars:
+                current.streamAttemptStartResponseChars ?? current.streamingResponseChars,
+              streamAttemptStartIndex: undefined,
+              streamAttemptStartResponseChars: undefined,
+              apiRetry: null,
+              streamingFallback: null,
+              statusVerb: '',
+              replaceHistoryOnCompletion: true,
+            }
+          })
+          useTabStore.getState().updateTabStatus(sessionId, 'running')
+          ensureElapsedTimer()
+          void get().loadHistory(sessionId)
+          break
+        }
+
+        if (session.chatState === 'idle') break
+
+        const text = `${session.streamingText}${consumePendingDelta(sessionId)}`
+        clearPendingToolInputDelta(sessionId)
+        clearPendingTaskToolUseIds(sessionId)
+        clearPendingToolParentUseIds(sessionId)
+        if (session.elapsedTimer) clearInterval(session.elapsedTimer)
+        const messagesWithText = text.trim()
+          ? appendAssistantTextMessage(session.messages, text, Date.now())
+          : session.messages
+        update(() => ({
+          messages: markPendingToolUseMessagesStopped(messagesWithText),
+          chatState: 'idle',
+          activeThinkingId: null,
+          activeToolUseId: null,
+          activeToolName: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          elapsedTimer: null,
+          statusVerb: '',
+          apiRetry: null,
+          streamingFallback: null,
+          streamingText: '',
+          streamingToolInput: '',
+        }))
+        const reconciledSession = get().sessions[sessionId]
+        const hasRunningBackgroundAgents = hasRunningBackgroundTasks(
+          reconciledSession?.backgroundAgentTasks,
+        )
+        useTabStore.getState().updateTabStatus(
+          sessionId,
+          hasRunningBackgroundAgents ? 'running' : 'idle',
+        )
+        // The terminal event may have arrived while this renderer was offline.
+        // Replace optimistic/partial state with the persisted transcript.
+        if (reconciledSession) {
+          void get().reloadHistory(sessionId, {
+            messages: reconciledSession.messages,
+            backgroundAgentTasks: reconciledSession.backgroundAgentTasks,
+          })
+        }
+        break
+      }
 
       case 'status':
         update((session) => {
@@ -1469,29 +1877,35 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 : '',
             ...(msg.state === 'idle' ? { activeThinkingId: null } : {}),
             ...(msg.state === 'idle' ? { apiRetry: null, streamingFallback: null } : {}),
+            ...(msg.attemptStart ? {
+              streamAttemptStartIndex: session.messages.length,
+              streamAttemptStartResponseChars: session.streamingResponseChars,
+            } : {}),
             ...(nextMessages !== session.messages ? { messages: nextMessages } : {}),
             ...(shouldFlush ? {
               streamingText: '',
             } : pendingText !== session.streamingText ? { streamingText: pendingText } : {}),
           }
         })
+        if (msg.state !== 'idle') ensureElapsedTimer()
         if (msg.state === 'idle') {
-          const session = get().sessions[sessionId]
-          if (session?.elapsedTimer) {
-            clearInterval(session.elapsedTimer)
-            update(() => ({ elapsedTimer: null }))
-          }
+          clearElapsedTimer()
         }
         // Sync tab status
-        useTabStore.getState().updateTabStatus(sessionId, msg.state === 'idle' ? 'idle' : 'running')
+        useTabStore.getState().updateTabStatus(
+          sessionId,
+          msg.state === 'idle' && !hasRunningBackgroundTasks(get().sessions[sessionId]?.backgroundAgentTasks)
+            ? 'idle'
+            : 'running',
+        )
         break
 
       case 'permission_mode_changed': {
         // CLI 是权限模式的真相来源。这里把它恢复/切换后的权威值校正到本地镜像。
         // 注意：只更新本地状态，**不要**走 setSessionPermissionMode —— 那会把
-        // set_permission_mode 再回发给 CLI 形成回环。未知模式（如未启用对应特性
-        // 的 'auto'）直接忽略，避免选择器拿到无法渲染的值。
-        const KNOWN_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk']
+        // set_permission_mode 再回发给 CLI 形成回环。未知模式直接忽略，避免
+        // 选择器拿到无法渲染的值。
+        const KNOWN_MODES: PermissionMode[] = ['default', 'acceptEdits', 'auto', 'plan', 'bypassPermissions', 'dontAsk']
         if (KNOWN_MODES.includes(msg.mode)) {
           useSessionStore.getState().updateSessionPermissionMode(sessionId, msg.mode)
         }
@@ -1501,6 +1915,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case 'content_start': {
         const session = get().sessions[sessionId]
         if (!session) break
+        if (session.suppressNextTaskNotificationResponse && msg.blockType === 'text') {
+          consumePendingDelta(sessionId)
+          update(() => ({
+            streamingText: '',
+            activeThinkingId: null,
+            statusVerb: '',
+          }))
+          break
+        }
+        if (session.suppressNextTaskNotificationResponse) {
+          update(() => ({ suppressNextTaskNotificationResponse: false }))
+        }
         const pendingText = `${session.streamingText}${consumePendingDelta(sessionId)}`
         if (msg.blockType !== 'text' && pendingText.trim()) {
           update((s) => ({
@@ -1546,6 +1972,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             streamingFallback: null,
           }))
         }
+        ensureElapsedTimer()
         break
       }
 
@@ -1567,11 +1994,54 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           activeThinkingId: null,
           statusVerb: '',
         }))
+        ensureElapsedTimer()
         useTabStore.getState().updateTabStatus(sessionId, 'running')
         break
       }
 
       case 'streaming_fallback': {
+        if (msg.cause === 'stream_retry') {
+          consumePendingDelta(sessionId)
+          clearPendingToolInputDelta(sessionId)
+          clearPendingTaskToolUseIds(sessionId)
+          clearPendingToolParentUseIds(sessionId)
+          update((session) => {
+            const startIndex = Math.max(
+              0,
+              Math.min(
+                session.streamAttemptStartIndex ?? session.messages.length,
+                session.messages.length,
+              ),
+            )
+            const messages = [
+              ...session.messages.slice(0, startIndex),
+              ...session.messages.slice(startIndex).filter((message) =>
+                message.type !== 'assistant_text' &&
+                message.type !== 'thinking' &&
+                !(message.type === 'tool_use' && message.isPending)),
+            ]
+            return {
+              messages,
+              streamingText: '',
+              streamingToolInput: '',
+              activeToolUseId: null,
+              activeToolName: null,
+              activeThinkingId: null,
+              streamingResponseChars:
+                session.streamAttemptStartResponseChars ?? session.streamingResponseChars,
+              streamAttemptStartIndex: undefined,
+              streamAttemptStartResponseChars: undefined,
+              streamingFallback: null,
+              apiRetry: null,
+              chatState: 'thinking',
+              statusVerb: '',
+            }
+          })
+          ensureElapsedTimer()
+          useTabStore.getState().updateTabStatus(sessionId, 'running')
+          break
+        }
+
         // 进入非流式降级阶段：旧的重试横幅（针对失败的流式请求）已过时，
         // 清掉换成降级提示；后续非流式重试到来的 api_retry 会重新接管显示。
         update((session) => ({
@@ -1584,13 +2054,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           activeThinkingId: null,
           statusVerb: '',
         }))
+        ensureElapsedTimer()
         useTabStore.getState().updateTabStatus(sessionId, 'running')
         break
       }
 
       case 'content_delta':
+        if (get().sessions[sessionId]?.suppressNextTaskNotificationResponse) {
+          consumePendingDelta(sessionId)
+          break
+        }
+        let receivedLiveDelta = false
         if (msg.text !== undefined) {
           if (!get().sessions[sessionId]) break
+          receivedLiveDelta = true
           appendPendingDelta(sessionId, msg.text)
           if (!flushTimerBySession.has(sessionId)) {
             const timer = setTimeout(() => {
@@ -1606,6 +2083,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
         }
         if (msg.toolInput !== undefined) {
+          receivedLiveDelta = true
           appendPendingToolInputDelta(sessionId, msg.toolInput)
           if (!toolInputFlushTimerBySession.has(sessionId)) {
             const timer = setTimeout(() => {
@@ -1641,9 +2119,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             toolInputFlushTimerBySession.set(sessionId, timer)
           }
         }
+        if (receivedLiveDelta && get().sessions[sessionId]?.chatState !== 'idle') ensureElapsedTimer()
         break
 
       case 'thinking':
+        if (get().sessions[sessionId]?.suppressNextTaskNotificationResponse) {
+          consumePendingDelta(sessionId)
+          update(() => ({
+            streamingText: '',
+            activeThinkingId: null,
+            statusVerb: '',
+          }))
+          break
+        }
         update((s) => {
           const pendingText = `${s.streamingText}${consumePendingDelta(sessionId)}`
           const base = pendingText.trim()
@@ -1670,6 +2158,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             streamingResponseChars: s.streamingResponseChars + msg.text.length,
           }
         })
+        ensureElapsedTimer()
         break
 
       case 'tool_use_complete': {
@@ -1731,7 +2220,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           return {
             messages,
             ...(stoppedTask ? { backgroundAgentTasks } : {}),
-            chatState: 'thinking',
+            chatState: hasPendingPermissionRequests(s)
+              ? 'permission_pending'
+              : 'thinking',
             activeThinkingId: null,
           }
         })
@@ -1752,33 +2243,43 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             : '有一个工具请求正在等待允许。',
           target: { type: 'session', sessionId },
         })
-        update((s) => ({
-          pendingPermission: {
+        update((s) => {
+          const pendingPermission: PendingPermission = {
             requestId: msg.requestId,
             toolName: msg.toolName,
             toolUseId: msg.toolUseId,
             input: msg.input,
             description: msg.description,
-          },
-          pendingComputerUsePermission: null,
-          chatState: 'permission_pending',
-          activeThinkingId: null,
-          apiRetry: null,
-          streamingFallback: null,
-          messages:
-            msg.toolName === 'AskUserQuestion'
-              ? s.messages
-              : [...s.messages, {
-                  id: nextId(),
-                  type: 'permission_request',
-                  requestId: msg.requestId,
-                  toolName: msg.toolName,
-                  toolUseId: msg.toolUseId,
-                  input: msg.input,
-                  description: msg.description,
-                  timestamp: Date.now(),
-                }],
-        }))
+          }
+          const pendingPermissions = {
+            ...getPendingPermissionRecord(s),
+            [msg.requestId]: pendingPermission,
+          }
+          const hasPermissionMessage = s.messages.some((message) =>
+            message.type === 'permission_request' && message.requestId === msg.requestId)
+
+          return {
+            pendingPermission,
+            pendingPermissions,
+            chatState: 'permission_pending',
+            activeThinkingId: null,
+            apiRetry: null,
+            streamingFallback: null,
+            messages:
+              msg.toolName === 'AskUserQuestion' || hasPermissionMessage
+                ? s.messages
+                : [...s.messages, {
+                    id: nextId(),
+                    type: 'permission_request',
+                    requestId: msg.requestId,
+                    toolName: msg.toolName,
+                    toolUseId: msg.toolUseId,
+                    input: msg.input,
+                    description: msg.description,
+                    timestamp: Date.now(),
+                  }],
+          }
+        })
         break
 
       case 'computer_use_permission_request':
@@ -1790,27 +2291,146 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           body: msg.request.reason || 'Computer Use 正在等待允许。',
           target: { type: 'session', sessionId },
         })
-        update(() => ({
-          pendingComputerUsePermission: {
+        update((session) => {
+          const pendingComputerUsePermission = {
             requestId: msg.requestId,
             request: msg.request,
-          },
-          pendingPermission: null,
-          chatState: 'permission_pending',
-          activeThinkingId: null,
-          apiRetry: null,
-          streamingFallback: null,
-        }))
+          }
+          const pendingComputerUsePermissions = {
+            ...getPendingComputerUsePermissionRecord(session),
+            [msg.requestId]: pendingComputerUsePermission,
+          }
+          return {
+            pendingComputerUsePermission: getCurrentComputerUsePermission(
+              pendingComputerUsePermissions,
+              session.pendingComputerUsePermission,
+            ),
+            pendingComputerUsePermissions,
+            chatState: 'permission_pending',
+            activeThinkingId: null,
+            apiRetry: null,
+            streamingFallback: null,
+          }
+        })
+        break
+
+      case 'permission_resolved':
+        update((session) => {
+          if (msg.permissionType === 'computer_use') {
+            const pendingComputerUsePermissions = getPendingComputerUsePermissionRecord(session)
+            if (!pendingComputerUsePermissions[msg.requestId]) return {}
+            delete pendingComputerUsePermissions[msg.requestId]
+            const remainingPermissions = Object.values(pendingComputerUsePermissions)
+
+            return {
+              pendingComputerUsePermissions,
+              pendingComputerUsePermission: getCurrentComputerUsePermission(
+                pendingComputerUsePermissions,
+                session.pendingComputerUsePermission,
+              ),
+              chatState: getChatStateAfterPermissionResolution(
+                session,
+                Object.keys(getPendingPermissionRecord(session)).length > 0 ||
+                  remainingPermissions.length > 0,
+                msg.allowed,
+              ),
+            }
+          }
+
+          const pendingPermissions = getPendingPermissionRecord(session)
+          if (!pendingPermissions[msg.requestId]) return {}
+          delete pendingPermissions[msg.requestId]
+          const remainingPermissions = Object.values(pendingPermissions)
+          return {
+            pendingPermissions,
+            pendingPermission: remainingPermissions[remainingPermissions.length - 1] ?? null,
+            chatState: getChatStateAfterPermissionResolution(
+              session,
+              remainingPermissions.length > 0 ||
+                Object.keys(getPendingComputerUsePermissionRecord(session)).length > 0,
+              msg.allowed,
+            ),
+          }
+        })
+        break
+
+      case 'permission_requests_snapshot':
+        update((session) => {
+          const toolRequestIds = new Set(msg.toolRequestIds)
+          const pendingPermissions = Object.fromEntries(
+            Object.entries(getPendingPermissionRecord(session))
+              .filter(([requestId]) => toolRequestIds.has(requestId)),
+          )
+          const computerUseRequestIds = new Set(msg.computerUseRequestIds)
+          const pendingComputerUsePermissions = Object.fromEntries(
+            Object.entries(getPendingComputerUsePermissionRecord(session))
+              .filter(([requestId]) => computerUseRequestIds.has(requestId)),
+          )
+          const remainingPermissions = Object.values(pendingPermissions)
+          const remainingComputerUsePermissions = Object.values(pendingComputerUsePermissions)
+          const hasRemainingPermissions = remainingPermissions.length > 0 ||
+            remainingComputerUsePermissions.length > 0
+
+          return {
+            pendingPermissions,
+            pendingPermission: remainingPermissions[remainingPermissions.length - 1] ?? null,
+            pendingComputerUsePermissions,
+            pendingComputerUsePermission: getCurrentComputerUsePermission(
+              pendingComputerUsePermissions,
+              session.pendingComputerUsePermission,
+            ),
+            chatState: hasRemainingPermissions
+              ? 'permission_pending'
+              : !msg.turnActive
+                ? 'idle'
+                : session.chatState === 'idle' || session.chatState === 'permission_pending'
+                  ? 'thinking'
+                  : session.chatState,
+          }
+        })
         break
 
       case 'message_complete': {
         const session = get().sessions[sessionId]
         if (!session) break
+        if (session.suppressNextTaskNotificationResponse) {
+          consumePendingDelta(sessionId)
+          clearPendingToolInputDelta(sessionId)
+          if (session.elapsedTimer) clearInterval(session.elapsedTimer)
+          const hasRunningBackgroundAgents = hasRunningBackgroundTasks(session.backgroundAgentTasks)
+          update(() => ({
+            tokenUsage: msg.usage,
+            chatState: 'idle',
+            activeThinkingId: null,
+            pendingPermission: null,
+            pendingPermissions: {},
+            pendingComputerUsePermission: null,
+            pendingComputerUsePermissions: {},
+            elapsedTimer: null,
+            apiRetry: null,
+            streamingFallback: null,
+            streamingText: '',
+            streamingToolInput: '',
+            suppressNextTaskNotificationResponse: false,
+            replaceHistoryOnCompletion: false,
+          }))
+          useTabStore.getState().updateTabStatus(sessionId, hasRunningBackgroundAgents ? 'running' : 'idle')
+          reconcileCompletedTranscriptHistory(
+            get,
+            sessionId,
+            session.replaceHistoryOnCompletion === true,
+          )
+          for (const queuedMessage of get().sessions[sessionId]?.queuedUserMessages ?? []) {
+            get().sendQueuedUserMessage(sessionId, queuedMessage.id)
+          }
+          break
+        }
+        const completedAt = Date.now()
         const wasAgentRunning = session.chatState !== 'idle'
         const text = `${session.streamingText}${consumePendingDelta(sessionId)}`
         let completionMessages = session.messages
         if (text.trim()) {
-          completionMessages = appendAssistantTextMessage(session.messages, text, Date.now())
+          completionMessages = appendAssistantTextMessage(session.messages, text, completedAt)
           update(() => ({
             messages: completionMessages,
             streamingText: '',
@@ -1818,21 +2438,27 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         } else if (text !== session.streamingText) {
           update(() => ({ streamingText: text }))
         }
+        const appendedCompletionMessage = completionMessages !== session.messages
+        const finalMessages = markPendingToolUseMessagesStopped(completionMessages)
+        const hasRunningBackgroundAgents = hasRunningBackgroundTasks(session.backgroundAgentTasks)
         if (session.elapsedTimer) clearInterval(session.elapsedTimer)
         update(() => ({
+          messages: finalMessages,
           tokenUsage: msg.usage,
           chatState: 'idle',
           activeThinkingId: null,
           pendingPermission: null,
+          pendingPermissions: {},
           pendingComputerUsePermission: null,
+          pendingComputerUsePermissions: {},
           elapsedTimer: null,
           apiRetry: null,
           streamingFallback: null,
+          replaceHistoryOnCompletion: false,
         }))
-        useTabStore.getState().updateTabStatus(sessionId, 'idle')
-        const appendedCompletionMessage = completionMessages !== session.messages
+        useTabStore.getState().updateTabStatus(sessionId, hasRunningBackgroundAgents ? 'running' : 'idle')
         const notification = wasAgentRunning && appendedCompletionMessage
-          ? buildAgentCompletionNotification(sessionId, completionMessages, text)
+          ? buildAgentCompletionNotification(sessionId, finalMessages, text)
           : null
         if (notification) {
           void notifyDesktop({
@@ -1843,7 +2469,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             target: { type: 'session', sessionId },
           })
         }
-        refreshCompletedTranscriptHistory(get, sessionId)
+        reconcileCompletedTranscriptHistory(
+          get,
+          sessionId,
+          session.replaceHistoryOnCompletion === true,
+        )
         for (const queuedMessage of get().sessions[sessionId]?.queuedUserMessages ?? []) {
           get().sendQueuedUserMessage(sessionId, queuedMessage.id)
         }
@@ -1860,6 +2490,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             messages: appendReplayedUserMessage(baseMessages, msg.content, Date.now()),
             ...(pendingText.trim() ? { streamingText: '' } : {}),
             activeThinkingId: null,
+            suppressNextTaskNotificationResponse: false,
+            replaceHistoryOnCompletion: false,
           }
         })
         break
@@ -1891,9 +2523,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             streamingText: '',
             statusVerb: '',
             pendingPermission: null,
+            pendingPermissions: {},
             pendingComputerUsePermission: null,
+            pendingComputerUsePermissions: {},
             apiRetry: null,
             streamingFallback: null,
+            suppressNextTaskNotificationResponse: false,
           }
         })
         useTabStore.getState().updateTabStatus(sessionId, 'error')
@@ -1904,6 +2539,29 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             update(() => ({ elapsedTimer: null }))
           }
         }
+        break
+
+      case 'background_task_stop_failed':
+        update((session) => {
+          const stoppingBackgroundTaskIds = { ...session.stoppingBackgroundTaskIds }
+          delete stoppingBackgroundTaskIds[msg.taskId]
+          const taskAlreadyFinished = session.backgroundAgentTasks?.[msg.taskId]?.status !== 'running'
+          return {
+            stoppingBackgroundTaskIds,
+            ...(taskAlreadyFinished ? {} : {
+              messages: [
+                ...session.messages,
+                {
+                  id: nextId(),
+                  type: 'error',
+                  message: msg.message,
+                  code: 'STOP_BACKGROUND_TASK_FAILED',
+                  timestamp: Date.now(),
+                },
+              ],
+            }),
+          }
+        })
         break
 
       case 'team_created':
@@ -1951,7 +2609,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             activeToolName: null,
             activeThinkingId: null,
             pendingPermission: null,
+            pendingPermissions: {},
             pendingComputerUsePermission: null,
+            pendingComputerUsePermissions: {},
             chatState: 'idle',
             elapsedTimer: null,
             elapsedSeconds: 0,
@@ -1963,6 +2623,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             slashCommands: [],
             activeGoal: null,
             backgroundAgentTasks: {},
+            stoppingBackgroundTaskIds: {},
             agentTaskNotifications: {},
           }))
           clearPendingDelta(sessionId)
@@ -1970,6 +2631,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           clearPendingToolParentUseIds(sessionId)
           useCLITaskStore.getState().clearTasks(sessionId)
           useSessionStore.getState().updateSessionTitle(sessionId, 'New Session')
+          useSessionStore.getState().updateSessionMessageCount(sessionId, 0)
           useTabStore.getState().updateTabTitle(sessionId, 'New Session')
           useTabStore.getState().updateTabStatus(sessionId, 'idle')
         }
@@ -2049,18 +2711,25 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const taskEvent = normalizeBackgroundAgentTaskEvent(msg.data, msg.subtype)
           if (taskEvent) {
             const now = Date.now()
+            let shouldUpdateIdleTabStatus = false
+            let hasRunningBackgroundAgentsAfterUpdate = false
             update((session) => {
               const backgroundAgentTasks = upsertBackgroundAgentTask(
                 session.backgroundAgentTasks ?? {},
                 taskEvent,
                 now,
               )
+              shouldUpdateIdleTabStatus = session.chatState === 'idle'
+              hasRunningBackgroundAgentsAfterUpdate = hasRunningBackgroundTasks(backgroundAgentTasks)
               const task = backgroundAgentTasks[taskEvent.taskId]
-              return {
-                backgroundAgentTasks,
-                ...(task ? { messages: upsertBackgroundTaskMessage(session.messages, task, now) } : {}),
-              }
+              return buildBackgroundTaskSessionUpdate(session, backgroundAgentTasks, task, now)
             })
+            if (shouldUpdateIdleTabStatus) {
+              useTabStore.getState().updateTabStatus(
+                sessionId,
+                hasRunningBackgroundAgentsAfterUpdate ? 'running' : 'idle',
+              )
+            }
           }
         }
         if (msg.subtype === 'task_notification' && msg.data && typeof msg.data === 'object') {
@@ -2074,16 +2743,28 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           const taskStatus = data.status
           if (taskEvent) {
             const now = Date.now()
+            let shouldUpdateIdleTabStatus = false
+            let hasRunningBackgroundAgentsAfterUpdate = false
             update((session) => {
               const backgroundAgentTasks = upsertBackgroundAgentTask(
                 session.backgroundAgentTasks ?? {},
                 taskEvent,
                 now,
               )
+              shouldUpdateIdleTabStatus = session.chatState === 'idle'
+              hasRunningBackgroundAgentsAfterUpdate = hasRunningBackgroundTasks(backgroundAgentTasks)
               const task = backgroundAgentTasks[taskEvent.taskId]
+              const suppressNotificationResponse =
+                (taskEvent.status === 'completed' ||
+                  taskEvent.status === 'failed' ||
+                  taskEvent.status === 'stopped') &&
+                shouldSuppressTaskNotificationResponse(session)
+              const stoppingBackgroundTaskIds = { ...session.stoppingBackgroundTaskIds }
+              delete stoppingBackgroundTaskIds[taskEvent.taskId]
               return {
-                backgroundAgentTasks,
-                ...(task ? { messages: upsertBackgroundTaskMessage(session.messages, task, now) } : {}),
+                ...buildBackgroundTaskSessionUpdate(session, backgroundAgentTasks, task, now),
+                stoppingBackgroundTaskIds,
+                ...(suppressNotificationResponse ? { suppressNextTaskNotificationResponse: true } : {}),
                 agentTaskNotifications: {
                   ...session.agentTaskNotifications,
                   ...(toolUseId &&
@@ -2105,6 +2786,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 },
               }
             })
+            if (shouldUpdateIdleTabStatus) {
+              useTabStore.getState().updateTabStatus(
+                sessionId,
+                hasRunningBackgroundAgentsAfterUpdate ? 'running' : 'idle',
+              )
+            }
           }
         }
         break
@@ -2291,6 +2978,76 @@ function extractHistoryTextBlocks(content: unknown): string[] {
     .filter(Boolean)
 }
 
+const COMMAND_METADATA_TAGS = new Set([
+  'command-name',
+  'command-message',
+  'command-args',
+  'local-command-caveat',
+  'skill-format',
+])
+const COMMAND_METADATA_BLOCK_RE = /<([a-z][\w-]*)(?:\s[^>]*)?>[\s\S]*?<\/\1>\s*/gi
+
+function hasCommandMetadataTag(text: string): boolean {
+  return (
+    text.includes('<command-name>') ||
+    text.includes('<command-message>') ||
+    text.includes('<command-args>') ||
+    text.includes('<local-command-caveat>') ||
+    text.includes('<skill-format>')
+  )
+}
+
+function isOnlyKnownCommandMetadata(text: string): boolean {
+  const remainder = text.replace(COMMAND_METADATA_BLOCK_RE, (match, tag: string) => (
+    COMMAND_METADATA_TAGS.has(tag.toLowerCase()) ? '' : match
+  ))
+  return remainder.trim().length === 0
+}
+
+function formatCommandMetadataDisplayText(
+  commandName: string,
+  args: string,
+  skillFormat: boolean,
+  commandMessage?: string,
+): string {
+  if (skillFormat) {
+    return `Skill(${commandMessage || commandName.replace(/^\//, '')})`
+  }
+
+  const normalizedName = commandName.startsWith('/') ? commandName : `/${commandName}`
+  return [normalizedName, args.trim()].filter(Boolean).join(' ')
+}
+
+function parseCommandMetadataText(text: string): string | null {
+  const trimmed = text.trim()
+  if (!hasCommandMetadataTag(trimmed)) return null
+  if (!isOnlyKnownCommandMetadata(trimmed)) return null
+
+  const commandName = readXmlTag(trimmed, 'command-name')
+  if (!commandName) return null
+
+  const args = readXmlTag(trimmed, 'command-args') ?? ''
+  const commandMessage = readXmlTag(trimmed, 'command-message')
+  const skillFormat = readXmlTag(trimmed, 'skill-format') === 'true'
+  return formatCommandMetadataDisplayText(commandName, args, skillFormat, commandMessage)
+}
+
+function getCommandMetadataDisplayText(content: unknown): string | null {
+  const textBlocks = extractHistoryTextBlocks(content)
+  if (textBlocks.length === 0) return null
+
+  const displayBlocks = textBlocks.map(parseCommandMetadataText)
+  if (displayBlocks.some((text) => text === null)) return null
+  return displayBlocks.join('\n')
+}
+
+function shouldHideCommandMetadataContent(content: unknown): boolean {
+  const textBlocks = extractHistoryTextBlocks(content)
+  if (textBlocks.length === 0) return false
+  if (!textBlocks.some(hasCommandMetadataTag)) return false
+  return getCommandMetadataDisplayText(content) === null
+}
+
 function isTaskNotificationContent(content: unknown): boolean {
   const textBlocks = extractHistoryTextBlocks(content)
   return textBlocks.length > 0 && textBlocks.every((text) => extractTaskNotificationXml(text) !== null)
@@ -2424,6 +3181,7 @@ function normalizeBackgroundAgentTaskEvent(
     taskType: readNonEmptyString(record, 'task_type', 'taskType'),
     workflowName: readNonEmptyString(record, 'workflow_name', 'workflowName'),
     prompt: readNonEmptyString(record, 'prompt'),
+    result: readNonEmptyString(record, 'result'),
     summary: readNonEmptyString(record, 'summary'),
     lastToolName: readNonEmptyString(record, 'last_tool_name', 'lastToolName'),
     outputFile: readNonEmptyString(record, 'output_file', 'outputFile'),
@@ -2447,6 +3205,10 @@ function upsertBackgroundAgentTask(
   if (existingKey && existingKey !== event.taskId) {
     delete next[existingKey]
   }
+  const startsNewLifecycle = Boolean(existing && (
+    (existing.status !== 'running' && event.status === 'running') ||
+    (existing.status !== 'running' && event.status !== 'running' && hasTerminalTaskPayloadChanged(existing, event))
+  ))
   return {
     ...next,
     [event.taskId]: {
@@ -2457,14 +3219,34 @@ function upsertBackgroundAgentTask(
       taskType: event.taskType ?? existing?.taskType,
       workflowName: event.workflowName ?? existing?.workflowName,
       prompt: event.prompt ?? existing?.prompt,
+      result: event.result ?? existing?.result,
       summary: event.summary ?? existing?.summary,
       lastToolName: event.lastToolName ?? existing?.lastToolName,
       outputFile: event.outputFile ?? existing?.outputFile,
       usage: event.usage ?? existing?.usage,
-      startedAt: existing?.startedAt ?? now,
+      startedAt: startsNewLifecycle ? now : existing?.startedAt ?? now,
       updatedAt: now,
     },
   }
+}
+
+function hasTerminalTaskPayloadChanged(
+  existing: BackgroundAgentTask,
+  event: Partial<BackgroundAgentTask> & Pick<BackgroundAgentTask, 'taskId' | 'status'>,
+): boolean {
+  return event.summary != null && event.summary !== existing.summary ||
+    event.result != null && event.result !== existing.result ||
+    event.outputFile != null && event.outputFile !== existing.outputFile ||
+    event.usage != null && !areBackgroundTaskUsageEqual(event.usage, existing.usage)
+}
+
+function areBackgroundTaskUsageEqual(
+  a: BackgroundAgentTaskUsage | undefined,
+  b: BackgroundAgentTaskUsage | undefined,
+): boolean {
+  return a?.totalTokens === b?.totalTokens &&
+    a?.toolUses === b?.toolUses &&
+    a?.durationMs === b?.durationMs
 }
 
 function normalizeGoalEventData(
@@ -2573,6 +3355,13 @@ function parseGoalEventFromLocalCommandOutput(
   if (trimmed === 'Goal cleared.' || trimmed.startsWith('Goal cleared:')) return { action: 'cleared', message: trimmed }
   if (trimmed === 'Goal marked complete.') return { action: 'completed', message: trimmed }
   if (trimmed === 'No active goal.') return { action: 'message', message: trimmed }
+  if (trimmed.startsWith('Goal continuing:')) {
+    return {
+      action: 'status',
+      status: 'continuing',
+      message: trimmed,
+    }
+  }
   if (trimmed.startsWith('Goal set:')) {
     const objective = trimmed.slice('Goal set:'.length).trim()
     return {
@@ -2763,6 +3552,133 @@ function extractLeadingFileReferences(text: string): {
   }
 }
 
+type WorkspaceReferenceHistoryDisplay = {
+  content: string
+  attachments: UIAttachment[]
+}
+
+function parseWorkspaceReferenceLocation(location: string): {
+  path: string
+  lineStart?: number
+  lineEnd?: number
+  diffSide?: 'old' | 'new'
+} {
+  const match = location.match(/^(.*?)(?::(old|new))?:L(\d+)(?:-L(\d+))?$/)
+  if (!match?.[1] || !match[3]) return { path: location }
+
+  const lineStart = Number(match[3])
+  const lineEnd = Number(match[4] ?? match[3])
+  return {
+    path: match[1],
+    lineStart,
+    lineEnd,
+    ...(match[2] === 'old' || match[2] === 'new' ? { diffSide: match[2] } : {}),
+  }
+}
+
+function parseWorkspaceReferenceHistoryPrompt(text: string): WorkspaceReferenceHistoryDisplay | null {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+  if (lines[0]?.trim() !== 'Referenced workspace context:') return null
+
+  const attachments: UIAttachment[] = []
+  let index = 1
+  const isLocationHeader = (line: string) => /^@".+":$/.test(line.trim())
+
+  while (index < lines.length) {
+    const header = lines[index]?.trim() ?? ''
+    const locationMatch = header.match(/^@"(.+)":$/)
+    if (!locationMatch?.[1]) break
+
+    const location = parseWorkspaceReferenceLocation(locationMatch[1])
+    index += 1
+
+    let note: string | undefined
+    if (lines[index]?.trimStart().startsWith('Comment:')) {
+      const noteLines = [lines[index]!.trimStart().slice('Comment:'.length).trimStart()]
+      index += 1
+      while (
+        index < lines.length &&
+        lines[index]!.trim() !== '' &&
+        !/^`{3,}/.test(lines[index]!.trim()) &&
+        !isLocationHeader(lines[index]!)
+      ) {
+        noteLines.push(lines[index]!)
+        index += 1
+      }
+      note = noteLines.join('\n').trim() || undefined
+    }
+
+    let quote: string | undefined
+    const fenceMatch = lines[index]?.trim().match(/^(`{3,})[^`]*$/)
+    if (fenceMatch?.[1]) {
+      const fence = fenceMatch[1]
+      index += 1
+      const quoteLines: string[] = []
+      while (index < lines.length && lines[index]?.trim() !== fence) {
+        quoteLines.push(lines[index]!)
+        index += 1
+      }
+      if (index >= lines.length) return null
+      index += 1
+      quote = quoteLines.join('\n').trim() || undefined
+    }
+
+    attachments.push({
+      type: 'file',
+      name: getReferenceName(location.path),
+      path: location.path,
+      ...(location.lineStart ? { lineStart: location.lineStart } : {}),
+      ...(location.lineEnd ? { lineEnd: location.lineEnd } : {}),
+      ...(location.diffSide ? { diffSide: location.diffSide } : {}),
+      ...(note ? { note } : {}),
+      ...(quote ? { quote } : {}),
+    })
+  }
+
+  if (attachments.length === 0) return null
+  while (lines[index]?.trim() === '') index += 1
+  return {
+    content: lines.slice(index).join('\n').trim(),
+    attachments,
+  }
+}
+
+function pathsReferToSameFile(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) return false
+  const normalizedLeft = left.replace(/\\/g, '/').replace(/^\.\//, '')
+  const normalizedRight = right.replace(/\\/g, '/').replace(/^\.\//, '')
+  return (
+    normalizedLeft === normalizedRight ||
+    normalizedLeft.endsWith(`/${normalizedRight}`) ||
+    normalizedRight.endsWith(`/${normalizedLeft}`)
+  )
+}
+
+function extractRestoredUserDisplay(text: string): {
+  content: string
+  attachments?: UIAttachment[]
+  modelContent?: string
+} {
+  const leading = extractLeadingFileReferences(text)
+  const workspace = parseWorkspaceReferenceHistoryPrompt(leading.content)
+  if (!workspace) return leading
+
+  const unmatchedLeading = [...(leading.attachments ?? [])]
+  for (const attachment of workspace.attachments) {
+    const matchingIndex = unmatchedLeading.findIndex((candidate) =>
+      pathsReferToSameFile(candidate.path, attachment.path),
+    )
+    if (matchingIndex >= 0) unmatchedLeading.splice(matchingIndex, 1)
+  }
+
+  const attachments = [...unmatchedLeading, ...workspace.attachments]
+  return {
+    content: workspace.content,
+    attachments: attachments.length > 0 ? attachments : undefined,
+    modelContent: text,
+  }
+}
+
 export function appendReplayedUserMessage(
   messages: UIMessage[],
   content: string,
@@ -2773,9 +3689,9 @@ export function appendReplayedUserMessage(
   // mapping) so the dedupe below can match the already-rendered message instead
   // of appending the raw prompt — paths and all — as a duplicate bubble.
   const sanitized = stripGeneratedImageMetadataLines(content) || content.trim()
-  const parsed = extractLeadingFileReferences(sanitized)
-  const displayContent = parsed.content.trim() || sanitized
-  if (!displayContent) return messages
+  const parsed = extractRestoredUserDisplay(sanitized)
+  const displayContent = parsed.content.trim()
+  if (!displayContent && !parsed.attachments?.length) return messages
 
   const modelContent = parsed.modelContent ?? sanitized
   const currentTurnUserIndex = findCurrentTurnUserMessageIndex(messages, modelContent)
@@ -2840,6 +3756,8 @@ function mapQueuedDisplayAttachments(attachments?: AttachmentRef[]): UIAttachmen
     isDirectory: attachment.isDirectory,
     lineStart: attachment.lineStart,
     lineEnd: attachment.lineEnd,
+    diffSide: attachment.diffSide,
+    hunkId: attachment.hunkId,
     note: attachment.note,
     quote: attachment.quote,
   }))
@@ -2979,6 +3897,23 @@ export function mapHistoryMessagesToUiMessages(
       continue
     }
     if (msg.type === 'user') {
+      const commandDisplayText = getCommandMetadataDisplayText(msg.content)
+      if (commandDisplayText) {
+        uiMessages.push({
+          id: msg.id || nextId(),
+          type: 'user_text',
+          content: commandDisplayText,
+          ...(msg.id ? { transcriptMessageId: msg.id } : {}),
+          timestamp: new Date(msg.timestamp).getTime(),
+        })
+        suppressTaskNotificationResponse = false
+        continue
+      }
+      if (shouldHideCommandMetadataContent(msg.content)) {
+        continue
+      }
+    }
+    if (msg.type === 'user') {
       suppressTaskNotificationResponse = false
     } else if (suppressTaskNotificationResponse) {
       continue
@@ -3059,7 +3994,7 @@ export function mapHistoryMessagesToUiMessages(
         })
         continue
       }
-      const parsed = extractLeadingFileReferences(msg.content)
+      const parsed = extractRestoredUserDisplay(msg.content)
       uiMessages.push({
         id: msg.id || nextId(),
         type: 'user_text',
@@ -3137,7 +4072,7 @@ export function mapHistoryMessagesToUiMessages(
         if (visualSelectionDisplay) {
           applyVisualSelectionHistoryDisplay(attachments, visualSelectionDisplay)
         }
-        const parsed = extractLeadingFileReferences(visibleText)
+        const parsed = extractRestoredUserDisplay(visibleText)
         const userContent = visualSelectionDisplay ? '' : parsed.content
         const modelContent = visualSelectionDisplay || modelText !== visibleText ? modelText : parsed.modelContent
         const allAttachments = [...(parsed.attachments ?? []), ...attachments]

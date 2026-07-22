@@ -187,6 +187,34 @@ describe('WorkspaceService', () => {
     expect(diff.diff?.length).toBeGreaterThan(0)
   })
 
+  it('prefers the live git diff over stale transcript edits for a currently changed file', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(
+      async (sessionId) => sessionId === 'session-1' ? repoDir : null,
+      async () => [{
+        id: 'assistant-1',
+        type: 'tool_use',
+        timestamp: new Date().toISOString(),
+        content: [{
+          type: 'tool_use',
+          name: 'Edit',
+          input: {
+            file_path: 'tracked.txt',
+            old_string: 'before\n',
+            new_string: 'model snapshot\n',
+          },
+        }],
+      }],
+    )
+
+    const diff = await service.getDiff('session-1', 'tracked.txt')
+
+    expect(diff.state).toBe('ok')
+    expect(diff.diff).toContain('diff --git a/tracked.txt b/tracked.txt')
+    expect(diff.diff).toContain('+after')
+    expect(diff.diff).not.toContain('+model snapshot')
+  })
+
   it('returns explicit non-git and missing-workdir states', async () => {
     const nonGitDir = await makeTempDir('workspace-service-non-git-')
     const missingDir = path.join(await makeTempDir('workspace-service-missing-parent-'), 'missing')
@@ -256,6 +284,50 @@ describe('WorkspaceService', () => {
     expect(diff.diff).toContain('diff --session a/src/App.jsx b/src/App.jsx')
     expect(diff.diff).toContain('-export default function App() { return <main>Old</main> }')
     expect(diff.diff).toContain('+export default function App() { return <main>New</main> }')
+  })
+
+  it('does not report a rejected session tool edit as a changed file', async () => {
+    const nonGitDir = await makeTempDir('workspace-service-rejected-change-')
+    const toolUseId = 'Write:rejected'
+    const service = new WorkspaceService(
+      async () => nonGitDir,
+      async () => [
+        {
+          id: 'assistant-1',
+          type: 'tool_use',
+          timestamp: new Date().toISOString(),
+          content: [{
+            type: 'tool_use',
+            id: toolUseId,
+            name: 'Write',
+            input: {
+              file_path: 'permission-denial-test.txt',
+              content: 'must not be written\n',
+            },
+          }],
+        },
+        {
+          id: 'tool-result-1',
+          type: 'tool_result',
+          timestamp: new Date().toISOString(),
+          content: [{
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content: 'The user rejected this tool use.',
+            is_error: true,
+          }],
+        },
+      ],
+    )
+
+    const status = await service.getStatus('session-1')
+
+    expect(status).toMatchObject({
+      state: 'ok',
+      workDir: nonGitDir,
+      isGitRepo: false,
+      changedFiles: [],
+    })
   })
 
   it('reports file-history changes without requiring a git repository', async () => {

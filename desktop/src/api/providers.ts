@@ -18,7 +18,7 @@ type PresetsResponse = { presets: ProviderPreset[] }
 type TestResultResponse = { result: ProviderTestResult }
 type AuthStatusResponse = {
   hasAuth: boolean
-  source: 'claude-abay-provider' | 'openai-oauth' | 'original-settings' | 'env' | 'none'
+  source: 'claude-abay-provider' | 'openai-oauth' | 'grok-oauth' | 'original-settings' | 'env' | 'none'
   activeProvider?: string
 }
 

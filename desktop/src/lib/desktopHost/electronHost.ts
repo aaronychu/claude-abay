@@ -63,6 +63,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
     isDesktop: true,
     capabilities: {
       appMode: true,
+      clipboard: true,
       dialogs: true,
       notifications: true,
       previewWebview: true,
@@ -74,12 +75,17 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
     },
     runtime: {
       getServerUrl: () => invoke(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl),
+      getLocalAccessToken: () => invoke(ELECTRON_IPC_CHANNELS.runtimeGetLocalAccessToken),
     },
     app: {
       getVersion: () => invoke(ELECTRON_IPC_CHANNELS.appGetVersion),
     },
     commands: {
       invoke: (command, args) => invoke(ELECTRON_IPC_CHANNELS.commandInvoke, { command, args }),
+    },
+    clipboard: {
+      readText: () => invoke(ELECTRON_IPC_CHANNELS.clipboardReadText),
+      writeText: text => invoke(ELECTRON_IPC_CHANNELS.clipboardWriteText, text),
     },
     events: {
       listen: (_eventName, handler) => subscribe(ELECTRON_EVENT_CHANNELS.event, handler),
@@ -140,6 +146,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       navigate: url => invoke(ELECTRON_IPC_CHANNELS.previewNavigate, url),
       setBounds: bounds => invoke(ELECTRON_IPC_CHANNELS.previewSetBounds, bounds),
       setVisible: visible => invoke(ELECTRON_IPC_CHANNELS.previewSetVisible, visible),
+      setZoom: level => invoke(ELECTRON_IPC_CHANNELS.previewSetZoom, level),
       close: () => invoke(ELECTRON_IPC_CHANNELS.previewClose),
       message: payload => invoke(ELECTRON_IPC_CHANNELS.previewMessage, payload),
       onEvent: handler => subscribe(ELECTRON_EVENT_CHANNELS.previewEvent, handler),
@@ -147,7 +154,6 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
     appMode: {
       get: () => invoke(ELECTRON_IPC_CHANNELS.appModeGet),
       set: config => invoke(ELECTRON_IPC_CHANNELS.appModeSet, config),
-      detectPortableDir: () => invoke(ELECTRON_IPC_CHANNELS.appModeDetectPortableDir),
       prepareRestart: () => invoke(ELECTRON_IPC_CHANNELS.appModePrepareRestart),
       restart: () => invoke(ELECTRON_IPC_CHANNELS.appModeRestart),
     },

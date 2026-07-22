@@ -27,18 +27,59 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)).toBe(String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
   })
 
+  test('preserves persisted market tabs during startup migration', () => {
+    window.localStorage.setItem('claude-abay-open-tabs', JSON.stringify({
+      openTabs: [
+        { sessionId: '__market__', title: 'Market', type: 'market' },
+        { sessionId: '__traces__', title: 'Traces', type: 'traces' },
+      ],
+      activeTabId: '__market__',
+    }))
+
+    const report = runDesktopPersistenceMigrations()
+
+    expect(report.migratedKeys).toContain('claude-abay-open-tabs')
+    expect(JSON.parse(window.localStorage.getItem('claude-abay-open-tabs') || '{}')).toEqual({
+      openTabs: [
+        { sessionId: '__market__', title: 'Market', type: 'market' },
+        { sessionId: '__traces__', title: 'Traces', type: 'traces' },
+      ],
+      activeTabId: '__market__',
+    })
+  })
+
+  test('canonicalizes mismatched persisted special tab ids and types during startup migration', () => {
+    window.localStorage.setItem('claude-abay-open-tabs', JSON.stringify({
+      openTabs: [
+        { sessionId: '__settings__', title: 'Settings', type: 'market' },
+        { sessionId: '__market__', title: 'Skills', type: 'settings' },
+      ],
+      activeTabId: '__settings__',
+    }))
+
+    runDesktopPersistenceMigrations()
+
+    expect(JSON.parse(window.localStorage.getItem('claude-abay-open-tabs') || '{}')).toEqual({
+      openTabs: [
+        { sessionId: '__settings__', title: 'Settings', type: 'settings' },
+        { sessionId: '__market__', title: 'Skills', type: 'market' },
+      ],
+      activeTabId: '__settings__',
+    })
+  })
+
   test('filters stale session runtime selections without clearing unrelated keys', () => {
     window.localStorage.setItem('unrelated-user-key', 'keep')
     window.localStorage.setItem('claude-abay-session-runtime', JSON.stringify({
       good: { providerId: null, modelId: 'claude-sonnet' },
-      alsoGood: { providerId: 'provider-1', modelId: 'gpt-5.4' },
+      alsoGood: { providerId: 'openai-official', modelId: 'gpt-5.6-sol', effortLevel: 'xhigh' },
       bad: { providerId: 'provider-2' },
     }))
 
     runDesktopPersistenceMigrations()
 
     expect(JSON.parse(window.localStorage.getItem('claude-abay-session-runtime') || '{}')).toEqual({
-      alsoGood: { providerId: 'provider-1', modelId: 'gpt-5.4' },
+      alsoGood: { providerId: 'openai-official', modelId: 'gpt-5.6-sol', effortLevel: 'xhigh' },
       good: { providerId: null, modelId: 'claude-sonnet' },
     })
     expect(window.localStorage.getItem('unrelated-user-key')).toBe('keep')
@@ -63,6 +104,17 @@ describe('desktop persistence migrations', () => {
 
     expect(report.migratedKeys).not.toContain('claude-abay-theme')
     expect(window.localStorage.getItem('claude-abay-theme')).toBe('white')
+  })
+
+  test('preserves every supported locale during startup migration', () => {
+    for (const locale of ['en', 'zh', 'zh-TW', 'jp', 'kr']) {
+      window.localStorage.setItem('claude-abay-locale', locale)
+
+      const report = runDesktopPersistenceMigrations()
+
+      expect(report.migratedKeys).not.toContain('claude-abay-locale')
+      expect(window.localStorage.getItem('claude-abay-locale')).toBe(locale)
+    }
   })
 
   test('preserves valid app zoom and removes invalid app zoom values', () => {

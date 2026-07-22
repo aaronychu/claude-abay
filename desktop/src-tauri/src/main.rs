@@ -99,7 +99,7 @@ fn determine_startup_portable_dir() -> Option<PathBuf> {
 
     if let Some(ref sys_cfg) = system_config {
         // 修复：必须使用 Tauri 默认的 bundle identifier
-        let app_subdir = sys_cfg.join("com.claude-code-haha.desktop");
+        let app_subdir = sys_cfg.join("com.claude-code-abay.desktop");
         if let Some((mode, portable_dir)) = get_mode_from_config(&app_subdir) {
             if mode == "portable" {
                 return Some(portable_dir.unwrap_or(default_portable.clone()));
@@ -130,7 +130,7 @@ fn determine_startup_portable_dir() -> Option<PathBuf> {
             || dir.join("plugins").is_dir()
             || dir.join("cowork_plugins").is_dir()
             || dir.join("claude-abay").is_dir()
-            || dir.join("cc-haha").is_dir()
+            || dir.join("claude-abay").is_dir()
     }
 
     if dir_has_portable_data(&default_portable) {
