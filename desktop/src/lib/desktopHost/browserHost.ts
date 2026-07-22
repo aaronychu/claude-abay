@@ -38,6 +38,7 @@ const defaultPermissionState: NotificationPermissionState = 'default'
 export const browserHost: DesktopHost = {
   kind: 'browser',
   isDesktop: false,
+  platform: { os: 'browser', windowsBuild: null },
   capabilities: browserCapabilities,
   runtime: {
     async getServerUrl() {

@@ -1207,6 +1207,13 @@ button, input, textarea, select, a, [role="button"] {
   background-image: none;
 }
 
+.app-shell--desktop.app-shell--windows10 .sidebar-panel {
+  background-color: var(--color-surface-sidebar);
+  background-image: none;
+  backdrop-filter: blur(30px) saturate(1.35);
+  -webkit-backdrop-filter: blur(30px) saturate(1.35);
+}
+
 .sidebar-panel::before {
   content: "";
   position: absolute;
@@ -1242,6 +1249,15 @@ button, input, textarea, select, a, [role="button"] {
 
 [data-theme="dark"] .sidebar-panel::before {
   background: var(--color-sidebar-material-tint);
+}
+
+[data-theme="light"] .app-shell--desktop.app-shell--windows10 .sidebar-panel::before,
+[data-theme="white"] .app-shell--desktop.app-shell--windows10 .sidebar-panel::before {
+  background: rgba(239, 243, 252, 0.24);
+}
+
+[data-theme="dark"] .app-shell--desktop.app-shell--windows10 .sidebar-panel::before {
+  background: rgba(12, 14, 20, 0.24);
 }
 
 .sidebar-panel[data-state="closed"] {

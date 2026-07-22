@@ -6,6 +6,11 @@ import type {
 
 export type DesktopHostKind = 'browser' | 'electron'
 
+export type DesktopHostPlatform = {
+  os: 'browser' | 'macos' | 'windows' | 'linux' | 'unknown'
+  windowsBuild?: number | null
+}
+
 export type DesktopHostCapability =
   | 'appMode'
   | 'clipboard'
@@ -140,6 +145,7 @@ export type AppModeSetInput = {
 export type DesktopHost = {
   kind: DesktopHostKind
   isDesktop: boolean
+  platform?: DesktopHostPlatform
   capabilities: DesktopHostCapabilities
   runtime: {
     getServerUrl(): Promise<string>

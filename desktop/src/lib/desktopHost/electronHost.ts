@@ -1,5 +1,6 @@
 import type {
   DesktopHost,
+  DesktopHostPlatform,
   DesktopHostUnlisten,
   DesktopUpdate,
   DesktopUpdateDownloadEvent,
@@ -36,7 +37,10 @@ function safeInvoke<T>(
   return bridge.invoke<T>(channel, payload)
 }
 
-export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
+export function createElectronHost(
+  bridge: ElectronHostBridge,
+  platform: DesktopHostPlatform = { os: 'unknown', windowsBuild: null },
+): DesktopHost {
   const invoke = <T>(channel: ElectronIpcChannel, payload?: unknown) =>
     safeInvoke<T>(bridge, channel, payload)
   const subscribe = <T>(channel: ElectronEventChannel, handler: (payload: T) => void) =>
@@ -61,6 +65,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
   return {
     kind: 'electron',
     isDesktop: true,
+    platform,
     capabilities: {
       appMode: true,
       clipboard: true,

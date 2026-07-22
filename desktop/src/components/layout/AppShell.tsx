@@ -31,6 +31,13 @@ function isChatTab(tab: Tab | undefined) {
   return tab?.type === 'session'
 }
 
+export function shellPlatformClassForHost(host = getDesktopHost()) {
+  if (!host.isDesktop || host.platform?.os !== 'windows') return ''
+  const build = host.platform.windowsBuild
+  if (typeof build === 'number' && build > 0 && build < 22000) return 'app-shell--windows10'
+  return ''
+}
+
 export function AppShell() {
   const fetchSettings = useSettingsStore((s) => s.fetchAll)
   const sidebarOpen = useUIStore((s) => s.sidebarOpen)
@@ -43,7 +50,9 @@ export function AppShell() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const t = useTranslation()
   const traceLaunch = useMemo(() => getTraceLaunchRequest(), [])
+  const desktopHost = getDesktopHost()
   const desktopRuntime = isDesktopRuntime()
+  const desktopPlatformClass = shellPlatformClassForHost(desktopHost)
   const isMobileShell = useMobileViewport() && !desktopRuntime
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
@@ -221,7 +230,7 @@ export function AppShell() {
   }
 
   return (
-    <div className={`app-shell app-shell-viewport flex overflow-hidden bg-[var(--color-surface)]${desktopRuntime ? ' app-shell--desktop' : ''}${isMobileShell ? ' app-shell--mobile' : ''}`}>
+    <div className={`app-shell app-shell-viewport flex overflow-hidden bg-[var(--color-surface)]${desktopRuntime ? ' app-shell--desktop' : ''}${desktopPlatformClass ? ` ${desktopPlatformClass}` : ''}${isMobileShell ? ' app-shell--mobile' : ''}`}>
       {isMobileShell && effectiveSidebarOpen ? (
         <button
           type="button"

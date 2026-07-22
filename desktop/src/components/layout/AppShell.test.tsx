@@ -118,7 +118,7 @@ vi.mock('../shared/UpdateChecker', () => ({
   UpdateChecker: () => <div>updates loaded</div>,
 }))
 
-import { AppShell } from './AppShell'
+import { AppShell, shellPlatformClassForHost } from './AppShell'
 
 describe('AppShell boot flow', () => {
   beforeEach(() => {
@@ -139,6 +139,18 @@ describe('AppShell boot flow', () => {
     useUIStore.setState({ sidebarOpen: true })
     Reflect.deleteProperty(window, 'desktopHost')
     window.history.pushState({}, '', '/')
+  })
+
+  it('limits the Windows material fallback to Windows 10', () => {
+    const baseHost = {
+      isDesktop: true,
+      platform: { os: 'windows' as const, windowsBuild: 19045 },
+    }
+
+    expect(shellPlatformClassForHost(baseHost as never)).toBe('app-shell--windows10')
+    expect(shellPlatformClassForHost({ ...baseHost, platform: { os: 'windows', windowsBuild: 22631 } } as never)).toBe('')
+    expect(shellPlatformClassForHost({ ...baseHost, platform: { os: 'macos', windowsBuild: null } } as never)).toBe('')
+    expect(shellPlatformClassForHost({ ...baseHost, isDesktop: false } as never)).toBe('')
   })
 
   it('renders the desktop chrome after server and settings bootstrap', async () => {
