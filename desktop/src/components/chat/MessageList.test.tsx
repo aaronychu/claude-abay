@@ -1747,6 +1747,34 @@ describe('MessageList nested tool calls', () => {
     expect(document.activeElement).not.toBe(copyButton)
   })
 
+  it('renders slash command metadata as a readable user prompt', () => {
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            {
+              id: 'user-command',
+              type: 'user_text',
+              content: [
+                '<command-message>skill-creator</command-message>',
+                '<command-name>/skill-creator</command-name>',
+                '<command-args>帮我创建一个技能，当用户需要读取工作饱和度平台的时候，载入数据`/Users/ayz/employees_2026-W23.json`</command-args>',
+              ].join('\n'),
+              timestamp: 1,
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByText(/\/skill-creator 帮我创建一个技能/)).toBeTruthy()
+    expect(screen.queryByText(/<command-message>/)).toBeNull()
+    expect(screen.queryByText(/<command-name>/)).toBeNull()
+    expect(screen.queryByText(/<command-args>/)).toBeNull()
+  })
+
   it('adds selected user message text to the composer context', async () => {
     useChatStore.setState({
       sessions: {
@@ -3597,7 +3625,7 @@ describe('MessageList nested tool calls', () => {
   it('relativizes Windows checkpoint paths against the turn workdir', () => {
     expect(relativizeWorkspacePath(
       'C:\\Users\\Example\\aacc\\src\\App.tsx',
-      'c:/users/relakkes/aacc',
+      'c:/users/example/aacc',
     )).toBe('src/App.tsx')
   })
 

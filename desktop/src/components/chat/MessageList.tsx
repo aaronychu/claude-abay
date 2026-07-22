@@ -25,6 +25,7 @@ import { CurrentTurnChangeCard } from './CurrentTurnChangeCard'
 import type { AgentTaskNotification, UIMessage } from '../../types/chat'
 import { formatTokenCount } from '../../lib/formatTokenCount'
 import { isTouchH5Document } from '../../lib/touchH5'
+import { formatCommandMessageContent } from '../../lib/commandMessage'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { clearWindowSelection, getSelectionPopoverPosition, useSelectionPopoverDismiss } from '../../hooks/useSelectionPopoverDismiss'
 import {
@@ -2089,22 +2090,25 @@ export const MessageBlock = memo(function MessageBlock({
   const t = useTranslation()
 
   switch (message.type) {
-    case 'user_text':
+    case 'user_text': {
+      const displayContent = formatCommandMessageContent(message.content)
       return (
         <SelectableChatMessage
           sessionId={sessionId}
           messageId={message.id}
           role="user"
-          content={message.content}
+          content={displayContent}
         >
           <UserMessage
-            content={message.content}
+            content={displayContent}
+            copyText={displayContent}
             attachments={message.attachments}
             branchAction={branchAction}
             timestamp={message.timestamp}
           />
         </SelectableChatMessage>
       )
+    }
     case 'assistant_text':
       return (
         <SelectableChatMessage

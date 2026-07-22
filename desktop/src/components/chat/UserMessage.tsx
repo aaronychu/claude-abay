@@ -5,13 +5,15 @@ import { MessageActionBar, type MessageBranchAction } from './MessageActionBar'
 
 type Props = {
   content: string
+  copyText?: string
   attachments?: UIAttachment[]
   branchAction?: MessageBranchAction
   timestamp?: number
 }
 
-export const UserMessage = memo(function UserMessage({ content, attachments, branchAction, timestamp }: Props) {
+export const UserMessage = memo(function UserMessage({ content, copyText, attachments, branchAction, timestamp }: Props) {
   const hasText = content.trim().length > 0
+  const actionCopyText = copyText ?? content
 
   return (
     <div className="mb-5 flex justify-end">
@@ -40,7 +42,7 @@ export const UserMessage = memo(function UserMessage({ content, attachments, bra
 
         {hasText && (
           <MessageActionBar
-            copyText={content}
+            copyText={actionCopyText}
             copyLabel="Copy prompt"
             branchAction={branchAction}
             align="end"
