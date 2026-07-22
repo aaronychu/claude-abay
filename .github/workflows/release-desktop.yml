@@ -54,10 +54,6 @@ jobs:
           if [ "${#missing[@]}" -gt 0 ]; then
             printf '::warning::Missing macOS signing/notarization secrets (%s): macOS artifacts will be unsigned and users must use install-macos-unsigned.sh.\n' "${missing[*]}"
             echo "macos_signed=false" >> "$GITHUB_OUTPUT"
-            if [ "$RELEASE_DRAFT" != "true" ]; then
-              echo "::error::Refusing to publish a non-draft desktop release without macOS signing/notarization secrets."
-              exit 1
-            fi
           else
             echo "macos_signed=true" >> "$GITHUB_OUTPUT"
           fi
@@ -507,7 +503,9 @@ jobs:
           if-no-files-found: error
 
   publish-release:
-    needs: build
+    needs:
+      - signing-preflight
+      - build
     runs-on: ubuntu-latest
 
     steps:
@@ -643,7 +641,7 @@ jobs:
             desktop/scripts/install-macos-unsigned.sh
 
       - name: Publish GitHub release after complete upload
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.draft == false)
+        if: (github.event_name == 'push' && needs.signing-preflight.outputs.macos_signed == 'true') || (github.event_name == 'workflow_dispatch' && inputs.draft == false)
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "v${{ steps.version.outputs.value }}" --draft=false --repo "${{ github.repository }}"
