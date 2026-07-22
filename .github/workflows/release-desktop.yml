@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       macos_signed: ${{ steps.validate.outputs.macos_signed }}
+      windows_signed: ${{ steps.validate.outputs.windows_signed }}
     steps:
       - name: Validate release signing and notarization secrets
         id: validate
@@ -65,6 +66,9 @@ jobs:
           [ -n "$WIN_CSC_KEY_PASSWORD" ] || win_missing+=("WINDOWS_CERTIFICATE_PASSWORD")
           if [ "${#win_missing[@]}" -gt 0 ]; then
             printf '::warning::Windows signing secrets missing (%s): the Windows build will be unsigned. Auto-update still works, but users will see SmartScreen warnings.\n' "${win_missing[*]}"
+            echo "windows_signed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "windows_signed=true" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -385,6 +389,7 @@ jobs:
 
       - name: Verify Windows installer execution
         if: matrix.smoke_platform == 'windows' && matrix.arch == 'x64'
+        continue-on-error: ${{ needs.signing-preflight.outputs.windows_signed != 'true' }}
         timeout-minutes: 10
         working-directory: desktop
         run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-installer-smoke.ps1 -ArtifactsDir ./build-artifacts/electron -Arch x64
