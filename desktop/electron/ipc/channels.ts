@@ -1,5 +1,6 @@
 export const ELECTRON_IPC_CHANNELS = {
   appGetVersion: 'desktop:app:get-version',
+  appSetTheme: 'desktop:app:set-theme',
   runtimeGetServerUrl: 'desktop:runtime:get-server-url',
   runtimeGetLocalAccessToken: 'desktop:runtime:get-local-access-token',
   commandInvoke: 'desktop:command:invoke',

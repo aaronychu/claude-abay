@@ -515,7 +515,7 @@ export function ActiveSession() {
           className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden ${showRightPanel ? CHAT_COLUMN_WITH_WORKSPACE_CLASS : isMobileLayout ? 'flex-1' : 'min-w-[360px] flex-1'}`}
         >
           {isMemberSession && (
-            <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface-container)]">
+            <div className="shrink-0 bg-[var(--color-surface-container)]">
               <div className="mx-auto max-w-[860px] flex items-center justify-between gap-4 px-8 py-2">
                 <div className="min-w-0">
                   <div className="flex items-center gap-3">
@@ -596,8 +596,8 @@ export function ActiveSession() {
                 <div
                   className={
                     showRightPanel
-                      ? 'flex w-full items-center border-b border-[var(--color-border)]/70 px-4 py-3'
-                      : 'w-full border-b border-outline-variant/10 px-4 py-3'
+                      ? 'flex w-full items-center px-4 py-3'
+                      : 'w-full px-4 py-3'
                   }
                 >
                   <div className={showRightPanel ? 'min-w-0 flex-1' : 'mx-auto w-full max-w-[860px] min-w-0'}>
@@ -753,7 +753,7 @@ export function ActiveSession() {
             <aside
               ref={workbenchPanelRef}
               data-testid="workbench-panel"
-              className="flex h-full shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-surface)]"
+              className="flex h-full shrink-0 flex-col bg-[var(--color-surface)]"
               style={{ width: rightPanelWidth, maxWidth: '62%', minWidth: 'min(420px, 54%)' }}
             >
               <WorkbenchPanel sessionId={activeTabId} />

@@ -59,6 +59,18 @@ describe('electron desktop host', () => {
     expect(host.capabilities.windowControls).toBe(true)
   })
 
+  it('syncs renderer theme changes to Electron native appearance', async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined)
+    const host = createElectronHost({
+      invoke,
+      subscribe: vi.fn(),
+    })
+
+    await host.app.setTheme?.('dark')
+
+    expect(invoke).toHaveBeenCalledWith(ELECTRON_IPC_CHANNELS.appSetTheme, 'dark')
+  })
+
   it('keeps the legacy window dragging IPC channel payload-free', async () => {
     const invoke = vi.fn().mockResolvedValue(undefined)
     const host = createElectronHost({

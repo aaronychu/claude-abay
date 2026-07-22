@@ -62,6 +62,7 @@ const urlWithOptionalBounds: Validator = value =>
   && (value.bounds === undefined || boundsPayload(value.bounds))
 
 const zoomPayload: Validator = value => typeof value === 'number' && Number.isFinite(value)
+const themePayload: Validator = value => value === 'white' || value === 'light' || value === 'dark'
 
 const updateCheckOptions: Validator = value => {
   if (value === undefined) return true
@@ -71,6 +72,7 @@ const updateCheckOptions: Validator = value => {
 
 export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
+  [ELECTRON_IPC_CHANNELS.appSetTheme]: themePayload,
   [ELECTRON_IPC_CHANNELS.runtimeGetServerUrl]: noPayload,
   [ELECTRON_IPC_CHANNELS.runtimeGetLocalAccessToken]: noPayload,
   [ELECTRON_IPC_CHANNELS.commandInvoke]: commandInvoke,

@@ -26,6 +26,10 @@ export type WindowChromeOptions = Pick<
   BrowserWindowConstructorOptions,
   'autoHideMenuBar' | 'frame' | 'fullscreenable' | 'titleBarStyle'
 >
+export type TransparentWindowOptions = Pick<
+  BrowserWindowConstructorOptions,
+  'backgroundColor' | 'backgroundMaterial' | 'transparent' | 'vibrancy' | 'visualEffectState'
+>
 
 export function windowStatePath(app: App, env: NodeJS.ProcessEnv = process.env): string {
   return path.join(env.CLAUDE_CONFIG_DIR || path.join(app.getPath('home'), '.claude'), WINDOW_STATE_FILE)
@@ -176,6 +180,29 @@ export function windowChromeOptionsForPlatform(
     titleBarStyle: 'default',
     fullscreenable: true,
   }
+}
+
+export function nativeMaterialWindowOptionsForPlatform(
+  platform: NodeJS.Platform = process.platform,
+): TransparentWindowOptions {
+  if (platform === 'darwin') {
+    return {
+      backgroundColor: '#00000000',
+      transparent: true,
+      vibrancy: 'sidebar',
+      visualEffectState: 'active',
+    }
+  }
+
+  if (platform === 'win32') {
+    return {
+      backgroundColor: '#00000000',
+      backgroundMaterial: 'acrylic',
+      transparent: true,
+    }
+  }
+
+  return {}
 }
 
 export function restoreWindowMaximized(window: BrowserWindow, state: StoredWindowState | null) {

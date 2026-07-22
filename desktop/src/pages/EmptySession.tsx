@@ -757,7 +757,7 @@ export function EmptySession() {
                 />
               </div>
 
-              <div className={`border-t border-[var(--color-border-separator)] pt-3 ${
+              <div className={`pt-3 ${
                 isMobileComposer ? 'flex flex-wrap items-center gap-2' : 'flex items-center justify-between'
               }`}>
                 <div className="flex shrink-0 items-center gap-2">

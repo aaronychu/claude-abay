@@ -221,7 +221,7 @@ export function AppShell() {
   }
 
   return (
-    <div className={`app-shell app-shell-viewport flex overflow-hidden bg-[var(--color-surface)]${isMobileShell ? ' app-shell--mobile' : ''}`}>
+    <div className={`app-shell app-shell-viewport flex overflow-hidden bg-[var(--color-surface)]${desktopRuntime ? ' app-shell--desktop' : ''}${isMobileShell ? ' app-shell--mobile' : ''}`}>
       {isMobileShell && effectiveSidebarOpen ? (
         <button
           type="button"

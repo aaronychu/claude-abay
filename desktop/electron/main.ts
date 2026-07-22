@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, screen, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, Notification, screen, session, WebContentsView } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
@@ -39,6 +39,7 @@ import { normalizeZoomFactor } from './services/zoom'
 import { resolveRendererEntry } from './services/rendererEntry'
 import { writeWindowSmokeSnapshot } from './services/windowSmoke'
 import { loadAndRevealMainWindow } from './services/windowStartup'
+import { installSkillsFromPaths } from './services/skills'
 import {
   installWindowLifecycle,
   readWindowState,
@@ -46,6 +47,7 @@ import {
   restoreWindowMaximized,
   saveWindowState,
   showMainWindow,
+  nativeMaterialWindowOptionsForPlatform,
   windowChromeOptionsForPlatform,
   windowOptionsFromState,
   MIN_WINDOW_HEIGHT,
@@ -266,6 +268,8 @@ async function handleCommandInvoke(payload: unknown): Promise<unknown> {
       return openSystemSettingsUrl('x-apple.systempreferences:com.apple.preference.notifications')
     case 'open_windows_notification_settings':
       return openSystemSettingsUrl('ms-settings:notifications')
+    case 'install_skills_from_paths':
+      return installSkillsFromPaths(args ?? {})
     default:
       return unsupported(`Electron command ${command}`)
   }
@@ -276,6 +280,9 @@ function registerIpcHandlers() {
     void getPreviewService().sendMessageToRenderer(event.sender, raw, mainWindow?.webContents)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.appGetVersion, () => app.getVersion())
+  registerHandler(ELECTRON_IPC_CHANNELS.appSetTheme, (_event, payload) => {
+    nativeTheme.themeSource = payload === 'dark' ? 'dark' : 'light'
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl, () => getServerRuntime().getServerUrl())
   registerHandler(
     ELECTRON_IPC_CHANNELS.runtimeGetLocalAccessToken,
@@ -374,6 +381,7 @@ async function createMainWindow() {
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     show: false,
+    ...nativeMaterialWindowOptionsForPlatform(process.platform),
     ...windowChromeOptionsForPlatform(process.platform),
     webPreferences: {
       preload: preloadPath(),

@@ -1,6 +1,7 @@
 import type {
   AppMode as SettingsAppMode,
   AppModeConfig as SettingsAppModeConfig,
+  ThemeMode,
 } from '../../types/settings'
 
 export type DesktopHostKind = 'browser' | 'electron'
@@ -146,6 +147,7 @@ export type DesktopHost = {
   }
   app: {
     getVersion(): Promise<string>
+    setTheme?(theme: ThemeMode): Promise<void>
   }
   commands: {
     invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>

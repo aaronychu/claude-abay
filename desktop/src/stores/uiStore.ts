@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { getDesktopHost } from '../lib/desktopHost'
 import { isThemeMode, THEME_MODES, type ThemeMode } from '../types/settings'
 
 const THEME_STORAGE_KEY = 'claude-abay-theme'
@@ -46,6 +47,7 @@ export function applyTheme(theme: ThemeMode) {
   if (typeof document === 'undefined') return
   document.documentElement.setAttribute('data-theme', theme)
   document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light'
+  void getDesktopHost().app.setTheme?.(theme).catch(() => undefined)
 }
 
 export function initializeTheme() {

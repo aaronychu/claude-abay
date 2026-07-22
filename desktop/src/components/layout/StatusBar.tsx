@@ -17,7 +17,7 @@ export function StatusBar() {
   const modelLabel = runtimeSelection?.modelId ?? currentModel?.name ?? null
 
   return (
-    <div className="h-[var(--statusbar-height)] flex items-center justify-between px-4 border-t border-[var(--color-border)] bg-[var(--color-surface-sidebar)] select-none text-[11px]">
+    <div className="h-[var(--statusbar-height)] flex items-center justify-between px-4 bg-[var(--color-surface-sidebar)] select-none text-[11px]">
       <div className="flex items-center gap-3">
         {projectName && (
           <span className="text-[var(--color-text-secondary)] font-[var(--font-mono)]">{projectName}</span>

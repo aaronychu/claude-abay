@@ -1523,7 +1523,7 @@ export class ConversationService {
   /**
    * 官方模式下构造 CLI 子进程的 auth env:
    * - CLAUDE_CODE_ENTRYPOINT=claude-desktop 让 CLI 忽略外部残留 ANTHROPIC_* env
-   * - 如果 haha 自管的 oauth.json 里有可用 token,注入 CLAUDE_CODE_OAUTH_TOKEN
+   * - 如果 A+BAY 自管的 oauth.json 里有可用 token,注入 CLAUDE_CODE_OAUTH_TOKEN
    *   让 CLI 直接拿 env 里的 token,不碰 Keychain,绕开 macOS ACL 静默拒绝
    *   (这是 DMG 安装 .app 后 403 "Request not allowed" 的唯一根治方案)
    */
@@ -1534,8 +1534,8 @@ export class ConversationService {
     try {
       // deferred import: avoids instantiating the OAuth singleton on every
       // ConversationService construction — only loaded when official mode hits.
-      const { hahaOAuthService } = await import('./hahaOAuthService.js')
-      const token = await hahaOAuthService.ensureFreshAccessToken()
+      const { abayOAuthService } = await import('./abayOAuthService.js')
+      const token = await abayOAuthService.ensureFreshAccessToken()
       if (token) {
         env.CLAUDE_CODE_OAUTH_TOKEN = token
       }
@@ -1556,8 +1556,8 @@ export class ConversationService {
 
     let token: string | null = null
     try {
-      const { hahaOAuthService } = await import('./hahaOAuthService.js')
-      token = await hahaOAuthService.ensureFreshAccessToken()
+      const { abayOAuthService } = await import('./abayOAuthService.js')
+      token = await abayOAuthService.ensureFreshAccessToken()
     } catch (err) {
       console.error(
         '[conversationService] refresh official OAuth token before turn failed:',

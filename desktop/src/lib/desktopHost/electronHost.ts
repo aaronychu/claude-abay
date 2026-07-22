@@ -79,6 +79,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
     },
     app: {
       getVersion: () => invoke(ELECTRON_IPC_CHANNELS.appGetVersion),
+      setTheme: theme => invoke(ELECTRON_IPC_CHANNELS.appSetTheme, theme),
     },
     commands: {
       invoke: (command, args) => invoke(ELECTRON_IPC_CHANNELS.commandInvoke, { command, args }),

@@ -214,7 +214,7 @@ export function Settings() {
     <div className="flex-1 flex flex-col overflow-hidden bg-[var(--color-surface)]">
       <div className="flex-1 flex overflow-hidden">
         {/* Tab navigation */}
-        <div className="w-[180px] border-r border-[var(--color-border)] py-3 flex-shrink-0 flex flex-col">
+        <div className="w-[180px] py-3 flex-shrink-0 flex flex-col">
           <div className="flex-1">
             <TabButton icon="dns" label={t('settings.tab.providers')} active={activeTab === 'providers'} onClick={() => setActiveTab('providers')} />
             <TabButton icon="tune" label={t('settings.tab.general')} active={activeTab === 'general'} onClick={() => setActiveTab('general')} />
@@ -231,7 +231,7 @@ export function Settings() {
             <TabButton icon="account_tree" label={t('settings.tab.trace')} active={activeTab === 'trace'} onClick={() => setActiveTab('trace')} />
             <TabButton icon="monitor_heart" label={t('settings.tab.diagnostics')} active={activeTab === 'diagnostics'} onClick={() => setActiveTab('diagnostics')} />
           </div>
-          <div className="border-t border-[var(--color-border)]/40 pt-1">
+          <div className="pt-1">
             <TabButton icon="info" label={t('settings.tab.about')} active={activeTab === 'about'} onClick={() => setActiveTab('about')} />
           </div>
         </div>

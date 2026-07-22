@@ -13,6 +13,7 @@ import {
   readWindowState,
   refreshWindowsDragHitTest,
   restoreWindowMaximized,
+  nativeMaterialWindowOptionsForPlatform,
   showMainWindow,
   toggleWindowFullScreen,
   windowChromeOptionsForPlatform,
@@ -206,6 +207,21 @@ describe('Electron window service', () => {
       titleBarStyle: 'default',
       fullscreenable: true,
     })
+  })
+
+  it('uses native desktop materials for real frosted sidebars', () => {
+    expect(nativeMaterialWindowOptionsForPlatform('darwin')).toEqual({
+      backgroundColor: '#00000000',
+      transparent: true,
+      vibrancy: 'sidebar',
+      visualEffectState: 'active',
+    })
+    expect(nativeMaterialWindowOptionsForPlatform('win32')).toEqual({
+      backgroundColor: '#00000000',
+      backgroundMaterial: 'acrylic',
+      transparent: true,
+    })
+    expect(nativeMaterialWindowOptionsForPlatform('linux')).toEqual({})
   })
 
   it('refreshes Windows drag hit testing after the first frameless show', () => {

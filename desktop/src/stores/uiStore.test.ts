@@ -4,6 +4,7 @@ describe('uiStore theme handling', () => {
   beforeEach(() => {
     vi.resetModules()
     window.localStorage.clear()
+    delete window.desktopHost
     document.documentElement.removeAttribute('data-theme')
     document.documentElement.style.colorScheme = ''
   })
@@ -42,6 +43,19 @@ describe('uiStore theme handling', () => {
     useUIStore.getState().toggleTheme()
     expect(useUIStore.getState().theme).toBe('white')
     expect(document.documentElement.style.colorScheme).toBe('light')
+  })
+
+  it('syncs theme changes to the desktop native appearance host', async () => {
+    const setTheme = vi.fn().mockResolvedValue(undefined)
+    window.desktopHost = {
+      app: { setTheme },
+    } as never
+
+    const { applyTheme } = await import('./uiStore')
+
+    applyTheme('dark')
+
+    expect(setTheme).toHaveBeenCalledWith('dark')
   })
 })
 

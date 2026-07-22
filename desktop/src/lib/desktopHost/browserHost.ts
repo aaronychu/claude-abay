@@ -51,6 +51,9 @@ export const browserHost: DesktopHost = {
     async getVersion() {
       return '0.1.0'
     },
+    async setTheme() {
+      // Browser preview has no native material to synchronize.
+    },
   },
   commands: {
     async invoke() {
