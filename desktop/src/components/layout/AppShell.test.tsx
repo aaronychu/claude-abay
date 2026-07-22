@@ -148,6 +148,7 @@ describe('AppShell boot flow', () => {
     }
 
     expect(shellPlatformClassForHost(baseHost as never)).toBe('app-shell--windows10')
+    expect(shellPlatformClassForHost({ ...baseHost, platform: { os: 'windows', windowsBuild: null } } as never)).toBe('app-shell--windows10')
     expect(shellPlatformClassForHost({ ...baseHost, platform: { os: 'windows', windowsBuild: 22631 } } as never)).toBe('')
     expect(shellPlatformClassForHost({ ...baseHost, platform: { os: 'macos', windowsBuild: null } } as never)).toBe('')
     expect(shellPlatformClassForHost({ ...baseHost, isDesktop: false } as never)).toBe('')

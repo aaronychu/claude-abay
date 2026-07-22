@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import type { App, BrowserWindow, BrowserWindowConstructorOptions, Display } from 'electron'
 
@@ -30,6 +31,16 @@ export type TransparentWindowOptions = Pick<
   BrowserWindowConstructorOptions,
   'backgroundColor' | 'backgroundMaterial' | 'transparent' | 'vibrancy' | 'visualEffectState'
 >
+
+export function windowsBuildFromRelease(release = os.release()): number | null {
+  const build = Number.parseInt(release.split('.')[2] ?? '', 10)
+  return Number.isFinite(build) ? build : null
+}
+
+export function isWindows11OrNewer(release = os.release()): boolean {
+  const build = windowsBuildFromRelease(release)
+  return typeof build === 'number' && build >= 22000
+}
 
 export function windowStatePath(app: App, env: NodeJS.ProcessEnv = process.env): string {
   return path.join(env.CLAUDE_CONFIG_DIR || path.join(app.getPath('home'), '.claude'), WINDOW_STATE_FILE)
@@ -184,6 +195,7 @@ export function windowChromeOptionsForPlatform(
 
 export function nativeMaterialWindowOptionsForPlatform(
   platform: NodeJS.Platform = process.platform,
+  release = os.release(),
 ): TransparentWindowOptions {
   if (platform === 'darwin') {
     return {
@@ -195,6 +207,12 @@ export function nativeMaterialWindowOptionsForPlatform(
   }
 
   if (platform === 'win32') {
+    if (!isWindows11OrNewer(release)) {
+      return {
+        backgroundColor: '#f1f4fb',
+      }
+    }
+
     return {
       backgroundColor: '#00000000',
       backgroundMaterial: 'acrylic',

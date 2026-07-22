@@ -34,7 +34,7 @@ function isChatTab(tab: Tab | undefined) {
 export function shellPlatformClassForHost(host = getDesktopHost()) {
   if (!host.isDesktop || host.platform?.os !== 'windows') return ''
   const build = host.platform.windowsBuild
-  if (typeof build === 'number' && build > 0 && build < 22000) return 'app-shell--windows10'
+  if (typeof build !== 'number' || build < 22000) return 'app-shell--windows10'
   return ''
 }
 

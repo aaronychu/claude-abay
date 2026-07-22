@@ -16,6 +16,7 @@ import {
   nativeMaterialWindowOptionsForPlatform,
   showMainWindow,
   toggleWindowFullScreen,
+  windowsBuildFromRelease,
   windowChromeOptionsForPlatform,
   windowOptionsFromState,
   windowStatePath,
@@ -216,12 +217,24 @@ describe('Electron window service', () => {
       vibrancy: 'sidebar',
       visualEffectState: 'active',
     })
-    expect(nativeMaterialWindowOptionsForPlatform('win32')).toEqual({
+    expect(nativeMaterialWindowOptionsForPlatform('win32', '10.0.22631')).toEqual({
       backgroundColor: '#00000000',
       backgroundMaterial: 'acrylic',
       transparent: true,
     })
+    expect(nativeMaterialWindowOptionsForPlatform('win32', '10.0.19045')).toEqual({
+      backgroundColor: '#f1f4fb',
+    })
+    expect(nativeMaterialWindowOptionsForPlatform('win32', '10.0')).toEqual({
+      backgroundColor: '#f1f4fb',
+    })
     expect(nativeMaterialWindowOptionsForPlatform('linux')).toEqual({})
+  })
+
+  it('parses Windows build numbers from OS releases', () => {
+    expect(windowsBuildFromRelease('10.0.19045')).toBe(19045)
+    expect(windowsBuildFromRelease('10.0.22631')).toBe(22631)
+    expect(windowsBuildFromRelease('10.0')).toBeNull()
   })
 
   it('refreshes Windows drag hit testing after the first frameless show', () => {
