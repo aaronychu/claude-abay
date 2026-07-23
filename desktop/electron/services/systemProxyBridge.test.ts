@@ -202,6 +202,18 @@ describe('SystemProxyBridge', () => {
       .rejects.toThrow('407 Proxy Authentication Required')
   })
 
+  it('keeps running when a CONNECT client resets during an error response', async () => {
+    const target = http.createServer((_request, response) => response.end('still-alive'))
+    servers.push(target)
+    const targetPort = await listen(target)
+    const bridge = await startBridge(async () => 'DIRECT')
+
+    await connectAndReset(bridge, 'offline.example:443')
+
+    await expect(requestThroughProxy(bridge, `http://127.0.0.1:${targetPort}/health`))
+      .resolves.toBe('still-alive')
+  })
+
   it('always bypasses system proxy resolution for loopback targets', async () => {
     const target = http.createServer((_request, response) => response.end('loopback'))
     servers.push(target)
@@ -391,6 +403,23 @@ function connectAndEcho(
         socket.destroy()
         resolve(result)
       }
+    })
+    socket.once('error', reject)
+  })
+}
+
+function connectAndReset(
+  proxyUrl: string,
+  authority: string,
+): Promise<void> {
+  const proxy = new URL(proxyUrl)
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: proxy.hostname, port: Number(proxy.port) })
+    socket.once('connect', () => {
+      socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`, () => {
+        socket.resetAndDestroy()
+        resolve()
+      })
     })
     socket.once('error', reject)
   })

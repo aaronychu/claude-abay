@@ -96,10 +96,11 @@ export class SystemProxyBridge implements SystemProxyBridgeLike {
       void this.handleConnect(request, clientSocket, head)
     })
     server.on('clientError', (_error, socket) => {
-      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')
+      endSocketWithHttpResponse(socket, 'HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')
     })
     server.on('connection', socket => {
       this.clientSockets.add(socket)
+      installSocketErrorGuard(socket)
       socket.once('close', () => this.clientSockets.delete(socket))
     })
     this.server = server
@@ -180,6 +181,7 @@ export class SystemProxyBridge implements SystemProxyBridgeLike {
     clientSocket: Duplex,
     head: Buffer,
   ): Promise<void> {
+    installSocketErrorGuard(clientSocket)
     try {
       const endpoint = parseEndpoint(request.url ?? '', 443)
       if (!endpoint) throw new Error('Invalid CONNECT target')
@@ -187,7 +189,9 @@ export class SystemProxyBridge implements SystemProxyBridgeLike {
       const rules = await this.resolveRules(target)
       const route = await connectTunnelUsingRules(rules, endpoint.host, endpoint.port)
       this.trackOutboundSocket(route.socket)
-      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n', error => {
+        if (error) clientSocket.destroy()
+      })
       if (head.length > 0) route.socket.write(head)
       route.socket.pipe(clientSocket)
       clientSocket.pipe(route.socket)
@@ -199,7 +203,7 @@ export class SystemProxyBridge implements SystemProxyBridgeLike {
       clientSocket.on('error', closeBoth)
     } catch (error) {
       const authenticationRequired = error instanceof ProxyAuthenticationRequiredError
-      clientSocket.end(`${authenticationRequired
+      endSocketWithHttpResponse(clientSocket, `${authenticationRequired
         ? 'HTTP/1.1 407 Proxy Authentication Required'
         : 'HTTP/1.1 502 Bad Gateway'}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${error instanceof Error ? error.message : String(error)}`)
     }
@@ -212,8 +216,34 @@ export class SystemProxyBridge implements SystemProxyBridgeLike {
 
   private trackOutboundSocket(socket: Duplex): void {
     this.outboundSockets.add(socket)
+    installSocketErrorGuard(socket)
     socket.once('close', () => this.outboundSockets.delete(socket))
   }
+}
+
+function installSocketErrorGuard(socket: Duplex): void {
+  if (socket.listenerCount('error') > 0) return
+  socket.on('error', error => {
+    if (isExpectedSocketCloseError(error)) return
+    console.warn('[desktop] system proxy bridge socket error:', error)
+  })
+}
+
+function endSocketWithHttpResponse(socket: Duplex, response: string): void {
+  if (socket.destroyed) return
+  installSocketErrorGuard(socket)
+  try {
+    socket.end(response)
+  } catch {
+    socket.destroy()
+  }
+}
+
+function isExpectedSocketCloseError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : ''
+  return code === 'ECONNRESET' || code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED'
 }
 
 function resolveHttpTarget(request: http.IncomingMessage): URL {
